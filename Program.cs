@@ -66,7 +66,7 @@ namespace QiNiuDrive
                 // 判断程序启动模式
                 if (File.Exists("Data\\UACMODE.SIGN"))
                 {
-                    // 相同进程采用UAC模式运行
+                    // 相同进程采用 UAC 模式运行
                     CharmMessageBox msgbox = new CharmMessageBox();
                     msgbox.Show("尊敬的用户您好：\n" +
                                 "欢迎您使用 " + APP_NAME + "！\n\n" +
@@ -78,7 +78,7 @@ namespace QiNiuDrive
                 else
                 {
                     Process currentProc = Process.GetCurrentProcess();
-                    // 对比进程ID，排除非自身进程，找到已经启动的主程序，并显示主窗口
+                    // 对比进程 ID，排除非自身进程，找到已经启动的主程序，并显示主窗口
                     foreach (Process proc in procs)
                     {
                         if (proc.Id == currentProc.Id) continue;
