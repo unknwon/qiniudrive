@@ -367,17 +367,28 @@ namespace QiNiuDrive
             IniOperation.WriteValue(APP_CFG_PATH, "setting", "sync_cycle", ((CharmTextBox)mSyncSettingControls[1]).Text);
             IniOperation.WriteValue(APP_CFG_PATH, "setting", "bucket", ((CharmTextBox)mSyncSettingControls[4]).Text);
 
-            string keys = BasicMethod.DesEncrypt(((CharmTextBox)mSyncSettingControls[2]).Text, "QWERTYUI") + "|" +
-                          BasicMethod.DesEncrypt(((CharmTextBox)mSyncSettingControls[3]).Text, "ASDFGHJK");
-            StreamWriter sw = new StreamWriter("Config/KEY");
-            sw.Write(keys);
-            sw.Close();
+            string accessKey = ((CharmTextBox)mSyncSettingControls[2]).Text;
+            string secretKey = ((CharmTextBox)mSyncSettingControls[3]).Text;
+
+            if (accessKey.Length > 0 && secretKey.Length > 0)
+            {
+                string keys = BasicMethod.DesEncrypt(accessKey, "QWERTYUI") + "|" +
+                       BasicMethod.DesEncrypt(secretKey, "ASDFGHJK");
+                StreamWriter sw = new StreamWriter("Config/KEY");
+                sw.Write(keys);
+                sw.Close();
+            }
+
             #endregion
 
             mIsLoadFinished = false;
             LoadLocalSetting();
 
-            if (!mIsUpdateChecked || !mIsVaildSyncDir || !mIsHasKeys) return;
+            if (!mIsUpdateChecked || !mIsVaildSyncDir || !mIsHasKeys)
+            {
+                RedrawStatusText("正在校验修改...");
+                return;
+            }
 
             RedrawStatusText("正在校验修改...");
             mIsNeedVerifyAuth = true;
@@ -690,7 +701,10 @@ namespace QiNiuDrive
 
             // 获取空间名称
             mBucket = IniOperation.ReadValue(APP_CFG_PATH, "setting", "bucket");
-            ((CharmTextBox)mSyncSettingControls[4]).Text = mBucket;
+            if (mBucket.Length > 0)
+                ((CharmTextBox)mSyncSettingControls[4]).Text = mBucket;
+            else
+                mIsVaildBucket = false;
 
             // 获取密钥
             if (File.Exists("Config/KEY"))
@@ -787,9 +801,7 @@ namespace QiNiuDrive
             // 获取本地文件列表
             DirectoryInfo di = new DirectoryInfo(mSyncDir);
             foreach (FileInfo fi in di.GetFiles())
-            {
                 mLocalFileList.Add(new SyncFile(fi.Name, fi.LastWriteTimeUtc.AddYears(-1969).Ticks));
-            }
 
             // 文件差异对比及消除
             for (int i = 0; i < mServerFileList.Count; i++)
@@ -833,6 +845,8 @@ namespace QiNiuDrive
                     }
                     mLocalFileList.RemoveAt(index);
                 }
+                else if (mServerFileList[i].Timestamp == mLocalFileList[index].Timestamp)
+                    mLocalFileList.RemoveAt(index);
             }
 
             // 本地完全差异文件上传
