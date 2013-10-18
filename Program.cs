@@ -35,6 +35,9 @@ namespace QiNiuDrive
         [STAThread]
         static void Main()
         {
+            if (!Directory.Exists("Data"))
+                Directory.CreateDirectory("Data");
+
             // 检查相同进程是否正在运行
             if (CheckSameProcess())
                 return;

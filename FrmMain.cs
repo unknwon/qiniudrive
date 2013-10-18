@@ -482,10 +482,13 @@ namespace QiNiuDrive
                 proc.MaxWorkingSet = Process.GetCurrentProcess().MaxWorkingSet;
                 proc.Dispose();
 #endif
-                if (count % mSyncCycle == 0 && mIsVaildKeys && mIsVaildBucket && mIsVaildSyncDir)
+                if (mSyncCycle != 0 && count % mSyncCycle == 0 &&
+                    mIsVaildKeys && mIsVaildBucket && mIsVaildSyncDir)
                 {
                     count = 0;
                     Sync();
+                    mServerFileList.Clear();
+                    mLocalFileList.Clear();
                 }
 
                 // 检查是否需要验证授权
@@ -513,6 +516,9 @@ namespace QiNiuDrive
 
             // 绘制窗体背景
             DrawFormBackground();
+
+            // 初始化菜单栏
+            mMenuNames = new[] { "同步设置", "高级设置", "网络设置", "关于" };
 
             #region 创建窗体组件
             // 创建最小化系统按钮
@@ -650,11 +656,12 @@ namespace QiNiuDrive
         // 加载本地设置
         private void LoadLocalSetting()
         {
+            // 判断是否为初次运行程序
+            if (!Directory.Exists("Config"))
+                Directory.CreateDirectory("Config");
+
             mIsVaildKeys = true;
             mIsVaildBucket = true;
-
-            // 获取菜单项名称
-            mMenuNames = IniOperation.ReadValue(APP_CFG_PATH, "setting", "menu_names").Split('|');
 
             #region 同步设置
             // 获取同步目录
@@ -748,8 +755,7 @@ namespace QiNiuDrive
             }
             catch (Exception e)
             {
-                mIsVaildKeys = !e.Message.Contains("status code 401");
-                mIsVaildBucket = !e.Message.Contains("status code 631");
+                CheckException(e.Message);
             }
         }
 
@@ -798,7 +804,7 @@ namespace QiNiuDrive
                     File.SetLastWriteTimeUtc(mSyncDir + "\\" + mServerFileList[i].Name,
                         new DateTime(mServerFileList[i].Timestamp).AddYears(1969).ToLocalTime());
                 }
-                else if (mServerFileList[i].Timestamp > mLocalFileList[i].Timestamp)
+                else if (mServerFileList[i].Timestamp > mLocalFileList[index].Timestamp)
                 {
                     RedrawStatusText("正在更新..." + mServerFileList[i].Name);
                     WebClient wb = new WebClient { Proxy = null };
@@ -806,23 +812,48 @@ namespace QiNiuDrive
                         mSyncDir + "\\" + mServerFileList[i].Name);
                     File.SetLastWriteTimeUtc(mSyncDir + "\\" + mServerFileList[i].Name,
                         new DateTime(mServerFileList[i].Timestamp).AddYears(1969).ToLocalTime());
+                    mLocalFileList.RemoveAt(index);
                 }
-                else if (mServerFileList[i].Timestamp < mLocalFileList[i].Timestamp)
+                else if (mServerFileList[i].Timestamp < mLocalFileList[index].Timestamp)
                 {
                     RedrawStatusText("正在上传..." + mServerFileList[i].Name);
                     mIsDonePut = false;
                     PutFile(mServerFileList[i].Name, mSyncDir + "\\" + mServerFileList[i].Name);
                     WaitUntilTure(mIsDonePut);
-                    Console.WriteLine(mPutRet.OK);
                     if (mPutRet.OK)
                         File.SetLastWriteTimeUtc(mSyncDir + "\\" + mServerFileList[i].Name,
                             new DateTime(mRsClient.Stat(new EntryPath(mBucket, mServerFileList[i].Name)).PutTime).
-                            AddYears(1969).ToLocalTime());
+                                AddYears(1969).ToLocalTime());
+                    else
+                    {
+                        CheckException(mPutRet.Exception.Message);
+                        RedrawStatusText("同步失败");
+                        mNotifyIcon.ShowBalloonTip(1000, "同步失败", mStatusText, ToolTipIcon.Error);
+                        return;
+                    }
+                    mLocalFileList.RemoveAt(index);
                 }
             }
 
             // 本地完全差异文件上传
-
+            foreach (SyncFile sf in mLocalFileList)
+            {
+                RedrawStatusText("正在上传..." + sf.Name);
+                mIsDonePut = false;
+                PutFile(sf.Name, mSyncDir + "\\" + sf.Name);
+                WaitUntilTure(mIsDonePut);
+                if (mPutRet.OK)
+                    File.SetLastWriteTimeUtc(mSyncDir + "\\" + sf.Name,
+                        new DateTime(mRsClient.Stat(new EntryPath(mBucket, sf.Name)).PutTime).
+                            AddYears(1969).ToLocalTime());
+                else
+                {
+                    CheckException(mPutRet.Exception.Message);
+                    RedrawStatusText("上传失败");
+                    mNotifyIcon.ShowBalloonTip(1000, "上传失败", mStatusText, ToolTipIcon.Error);
+                    return;
+                }
+            }
 
             RedrawStatusText("同步完成");
         }
@@ -843,7 +874,7 @@ namespace QiNiuDrive
         /// </summary>
         /// <param name="key">文件名称</param>
         /// <param name="fname">本地文件名称</param>
-        public void PutFile(string key, string fname)
+        private void PutFile(string key, string fname)
         {
             string upToken = new PutPolicy(mBucket).Token();
             IOClient client = new IOClient();
@@ -856,7 +887,7 @@ namespace QiNiuDrive
         }
 
         // 循环等待
-        public void WaitUntilTure(bool cond)
+        private void WaitUntilTure(bool cond)
         {
             while (true)
             {
@@ -864,6 +895,13 @@ namespace QiNiuDrive
                     return;
                 Thread.Sleep(100);
             }
+        }
+
+        // 检查异常
+        private void CheckException(string message)
+        {
+            mIsVaildKeys = !message.Contains("(401)");
+            mIsVaildBucket = !message.Contains("(631)");
         }
 
         #region 创建面板方法
