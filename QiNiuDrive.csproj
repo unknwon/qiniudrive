@@ -13,7 +13,7 @@
     <FileAlignment>512</FileAlignment>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
-    <PlatformTarget>AnyCPU</PlatformTarget>
+    <PlatformTarget>x86</PlatformTarget>
     <DebugSymbols>true</DebugSymbols>
     <DebugType>full</DebugType>
     <Optimize>false</Optimize>
@@ -41,8 +41,8 @@
     <Reference Include="CharmControlLibrary">
       <HintPath>..\Libraries\CharmControlLibrary.dll</HintPath>
     </Reference>
-    <Reference Include="QBox">
-      <HintPath>..\Libraries\QBox.dll</HintPath>
+    <Reference Include="Qiniu">
+      <HintPath>..\Libraries\Qiniu.dll</HintPath>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />

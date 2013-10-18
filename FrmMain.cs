@@ -13,12 +13,17 @@
 #region 命名空间引用
 using System;
 using System.IO;
-using System.Text;
+using System.Net;
 using System.Windows.Forms;
 using System.Drawing;
 using System.Threading;
 using System.Collections.Generic;
 using System.Diagnostics;
+
+using Qiniu.IO;
+using Qiniu.RS;
+using Qiniu.RSF;
+using Qiniu.Conf;
 
 using CharmCommonMethod;
 using CharmControlLibrary;
@@ -26,12 +31,29 @@ using CharmControlLibrary;
 
 namespace QiNiuDrive
 {
+    #region 结构
+    /// <summary>
+    /// 同步文件
+    /// </summary>
+    public struct SyncFile
+    {
+        public string Name;
+        public long Timestamp;
+
+        public SyncFile(string name, long timestamp)
+        {
+            this.Name = name;
+            this.Timestamp = timestamp;
+        }
+    }
+    #endregion
+
     // 七牛云盘主窗口
     public partial class FrmMain : Form
     {
         #region 常量
         private const string APP_NAME = "七牛云盘";             // 软件名称
-        private const string APP_VER = "v0.0.1";                // 软件版本
+        //private const string APP_VER = "v0.0.1";                // 软件版本
         private const string APP_CFG_PATH = "Config\\app.ini";  // 软件配置路径
         private const int TITLE_HEIGHT = 30;                    // 标题栏高度
         const int MENU_WIDTH = 90;                              // 菜单栏宽度
@@ -44,22 +66,37 @@ namespace QiNiuDrive
         private int mMenuSelectedIndex;             // 菜单栏现行选中项索引
         private string mStatusText;                 // 状态文本
         private bool mIsLoadFinished;               // 指示程序是否加载完毕
-        private bool mIsVaildSyncDir;               // 指示是否设置有效同步目录
+        private bool mIsUpdateChecked;              // 指示是否完成检查更新
 
         // * 用户控件 *
         private List<CharmControl> mCharmControls;          // Charm 控件集合
         private readonly ToolTip mToolTip = new ToolTip();  // 工具提示文本控件
         private NotifyIcon mNotifyIcon;                     // 托盘图标
         private CharmButton mBtnApply;                      // 应用按钮
+
+        // * 七牛 *
+        private RSFClient mRsfClient;
+        private RSClient mRsClient;
+        private List<SyncFile> mServerFileList; // 服务器文件列表
+        private List<SyncFile> mLocalFileList;  // 本地文件列表
+        private PutRet mPutRet;                 // 上传返回结果
         #endregion
 
         #region 同步设置
         // * 私有字段 *
-        private bool mIsHasKeys;    // 指示是否填写密钥
+        private bool mIsVaildSyncDir;           // 指示是否设置有效同步目录
+        private bool mIsHasKeys;                // 指示是否填写密钥
+        private bool mIsVaildKeys;              // 指示密钥是否有效
+        private bool mIsVaildBucket;            // 指示空间名称是否有效
+        private bool mIsNeedVerifyAuth;         // 指示是否需要验证授权
+        private string mSyncDir;                // 同步目录
+        private int mSyncCycle;                 // 同步周期
+        private string mBucket = string.Empty;  // 空间名称
+        private bool mIsDonePut;                // 指示是否完成上传
 
         // * 用户控件 *
         private List<Control> mSyncSettingControls;             // 同步设置控件集合
-        // 0-同步目录文本框；1-同步周期文本框；2-AccessKey 文本框；3-SecretKey 文本框
+        // 0-同步目录文本框；1-同步周期文本框；2-AccessKey 文本框；3-SecretKey 文本框；4-空间名称文本框
         private List<CharmControl> mSyncSettingCharmControls;   // 同步设置面板 Charm 控件集合
         #endregion
 
@@ -248,7 +285,6 @@ namespace QiNiuDrive
 
             // 重置重绘索引
             //mMultipleSettingRedrawIndex = 0;
-            //mDownloadSettingRedrawIndex = 0;
         }
         #endregion
 
@@ -296,10 +332,10 @@ namespace QiNiuDrive
                 this.TopMost = true;
                 this.TopMost = false;
             }
-            else
-            {
-                // 显示托盘菜单
-            }
+            //else
+            //{
+            //    // 显示托盘菜单
+            //}
         }
 
         // 确定按钮被单击事件
@@ -329,6 +365,7 @@ namespace QiNiuDrive
             #region 同步设置
             IniOperation.WriteValue(APP_CFG_PATH, "setting", "sync_dir", ((CharmTextBox)mSyncSettingControls[0]).Text);
             IniOperation.WriteValue(APP_CFG_PATH, "setting", "sync_cycle", ((CharmTextBox)mSyncSettingControls[1]).Text);
+            IniOperation.WriteValue(APP_CFG_PATH, "setting", "bucket", ((CharmTextBox)mSyncSettingControls[4]).Text);
 
             string keys = BasicMethod.DesEncrypt(((CharmTextBox)mSyncSettingControls[2]).Text, "QWERTYUI") + "|" +
                           BasicMethod.DesEncrypt(((CharmTextBox)mSyncSettingControls[3]).Text, "ASDFGHJK");
@@ -336,29 +373,37 @@ namespace QiNiuDrive
             sw.Write(keys);
             sw.Close();
             #endregion
+
+            mIsLoadFinished = false;
+            LoadLocalSetting();
+
+            if (!mIsUpdateChecked || !mIsVaildSyncDir || !mIsHasKeys) return;
+
+            RedrawStatusText("正在校验修改...");
+            mIsNeedVerifyAuth = true;
         }
         #endregion
 
         #region 同步设置
-        // 同步目录文本框文本改变事件（同步周期、AccessKey、SecretKey 文本框也关联此事件）
+        // 同步目录文本框文本改变事件（同步周期、AccessKey、SecretKey、空间名称文本框也关联此事件）
         private void txtSyncDir_TextChanged(object sender, EventArgs e)
         {
             // 首次启动时程序数据加载时不作响应
-            if (mIsLoadFinished && !mBtnApply.Enabled)
-            {
-                mBtnApply.Enabled = true;
-                this.Invalidate(mBtnApply.ClientRectangle); // 重绘控件
-            }
+            if (!mIsLoadFinished || mBtnApply.Enabled) return;
+
+            mBtnApply.Enabled = true;
+            this.Invalidate(mBtnApply.ClientRectangle); // 重绘控件
         }
 
         // 浏览路径按钮被单击事件
         private void btnViewPath_MouseClick(object sender, MouseEventArgs e)
         {
             // 创建并实例化文件浏览对话框
-            FolderBrowserDialog folderBrowserFialog = new FolderBrowserDialog();
-            folderBrowserFialog.Description = "请选择下载文件保存目录";
-            // 设置默认目录
-            folderBrowserFialog.SelectedPath = ((CharmTextBox)mSyncSettingControls[0]).Text;
+            FolderBrowserDialog folderBrowserFialog = new FolderBrowserDialog
+            {
+                Description = "请选择下载文件保存目录",
+                SelectedPath = ((CharmTextBox)mSyncSettingControls[0]).Text
+            };
 
             // 显示对话框并判断用户是否指定新的目录
             if (folderBrowserFialog.ShowDialog() == DialogResult.OK)
@@ -405,6 +450,57 @@ namespace QiNiuDrive
             Process.Start("http://weibo.com/Obahua");
         }
         #endregion
+        #endregion
+
+        #region 线程
+        // 全局更新检查线程
+        private void GlobalUpdateCheck()
+        {
+            // 检查更新
+            RedrawStatusText("正在检查更新...");
+            Thread.Sleep(1000);
+
+            // 初始化七牛服务
+            mRsfClient = new RSFClient(mBucket);
+            mRsClient = new RSClient();
+            mServerFileList = new List<SyncFile>();
+            mLocalFileList = new List<SyncFile>();
+
+            RedrawStatusText("正在连接服务器...");
+
+            // 检查授权及其它设置
+            VerifyAuth();
+            mIsUpdateChecked = true;
+
+            int count = 0;
+
+            while (true)
+            {
+#if(!DEBUG)
+    //内存释放
+                Process proc = Process.GetCurrentProcess();
+                proc.MaxWorkingSet = Process.GetCurrentProcess().MaxWorkingSet;
+                proc.Dispose();
+#endif
+                if (count % mSyncCycle == 0 && mIsVaildKeys && mIsVaildBucket && mIsVaildSyncDir)
+                {
+                    count = 0;
+                    Sync();
+                }
+
+                // 检查是否需要验证授权
+                if (mIsNeedVerifyAuth)
+                {
+                    mIsNeedVerifyAuth = false;
+                    VerifyAuth();
+                    RedrawStatusText("等待同步");
+                }
+
+                count++;
+                Thread.Sleep(1000);
+            }
+            // ReSharper disable once FunctionNeverReturns
+        }
         #endregion
 
         #region 方法
@@ -484,7 +580,7 @@ namespace QiNiuDrive
             else if (!mIsVaildSyncDir)
                 mStatusText = "无效的同步目录";
             else
-                mStatusText = "未启动同步";
+                mStatusText = "正在初始化...";
 
             #region 创建托盘图标
             // 创建托盘图标
@@ -497,6 +593,12 @@ namespace QiNiuDrive
 
             // 关联控件事件
             mNotifyIcon.MouseClick += mNotifyIcon_MouseClick;
+            #endregion
+
+            #region 创建服务线程
+            // 启动全局更新检查线程
+            Thread globalUpdateCheckThread = new Thread(GlobalUpdateCheck) { IsBackground = true };
+            globalUpdateCheckThread.Start();
             #endregion
         }
 
@@ -548,34 +650,40 @@ namespace QiNiuDrive
         // 加载本地设置
         private void LoadLocalSetting()
         {
+            mIsVaildKeys = true;
+            mIsVaildBucket = true;
+
             // 获取菜单项名称
             mMenuNames = IniOperation.ReadValue(APP_CFG_PATH, "setting", "menu_names").Split('|');
 
             #region 同步设置
             // 获取同步目录
-            string syncDir = IniOperation.ReadValue(APP_CFG_PATH, "setting", "sync_dir");
-            if (syncDir.Length > 0 && Directory.Exists(syncDir))
+            mSyncDir = IniOperation.ReadValue(APP_CFG_PATH, "setting", "sync_dir");
+            if (mSyncDir.Length > 0 && Directory.Exists(mSyncDir))
             {
-                ((CharmTextBox)mSyncSettingControls[0]).Text = syncDir;
+                ((CharmTextBox)mSyncSettingControls[0]).Text = mSyncDir;
                 mIsVaildSyncDir = true;
             }
             else
                 mIsVaildSyncDir = false;
 
             // 获取同步周期
-            int syncCycleNum;
             try
             {
-                syncCycleNum = Convert.ToInt32(IniOperation.ReadValue(APP_CFG_PATH, "setting", "sync_cycle"));
+                mSyncCycle = Convert.ToInt32(IniOperation.ReadValue(APP_CFG_PATH, "setting", "sync_cycle"));
             }
             catch
             {
-                syncCycleNum = 60;
+                mSyncCycle = 60;
             }
 
-            if (syncCycleNum < 60)
-                syncCycleNum = 60;
-            ((CharmTextBox)mSyncSettingControls[1]).Text = Convert.ToString(syncCycleNum);
+            if (mSyncCycle < 60)
+                mSyncCycle = 60;
+            ((CharmTextBox)mSyncSettingControls[1]).Text = Convert.ToString(mSyncCycle);
+
+            // 获取空间名称
+            mBucket = IniOperation.ReadValue(APP_CFG_PATH, "setting", "bucket");
+            ((CharmTextBox)mSyncSettingControls[4]).Text = mBucket;
 
             // 获取密钥
             if (File.Exists("Config/KEY"))
@@ -586,8 +694,10 @@ namespace QiNiuDrive
 
                 if (keys.Length > 0)
                 {
-                    ((CharmTextBox)mSyncSettingControls[2]).Text = BasicMethod.DesDecrypt(keys[0], "QWERTYUI");
-                    ((CharmTextBox)mSyncSettingControls[3]).Text = BasicMethod.DesDecrypt(keys[1], "ASDFGHJK");
+                    Config.ACCESS_KEY = BasicMethod.DesDecrypt(keys[0], "QWERTYUI");
+                    Config.SECRET_KEY = BasicMethod.DesDecrypt(keys[1], "ASDFGHJK");
+                    ((CharmTextBox)mSyncSettingControls[2]).Text = Config.ACCESS_KEY;
+                    ((CharmTextBox)mSyncSettingControls[3]).Text = Config.SECRET_KEY;
                     mIsHasKeys = true;
                 }
             }
@@ -606,6 +716,154 @@ namespace QiNiuDrive
             else
                 foreach (Control ctrl in mSyncSettingControls)
                     ctrl.Visible = false;
+        }
+
+        // 重绘状态文本
+        private void RedrawStatusText(string text)
+        {
+            if (text.Length > 0)
+                mStatusText = text;
+
+            if (!mIsHasKeys)
+                mStatusText = "未填写密钥";
+            else if (!mIsVaildSyncDir)
+                mStatusText = "无效的同步目录";
+            else if (!mIsVaildBucket)
+                mStatusText = "无效的空间名称";
+            else if (!mIsVaildKeys)
+                mStatusText = "无效的密钥";
+
+            this.Invalidate(new Rectangle(150, 6, 300, 24));
+            mNotifyIcon.Text = APP_NAME + "\n" + mStatusText;
+        }
+
+        // 验证授权
+        private void VerifyAuth()
+        {
+            if (mBucket.Length <= 0) return;
+
+            try
+            {
+                mRsfClient.ListPrefix(mBucket, "", "", 1);
+            }
+            catch (Exception e)
+            {
+                mIsVaildKeys = !e.Message.Contains("status code 401");
+                mIsVaildBucket = !e.Message.Contains("status code 631");
+            }
+        }
+
+        // 同步
+        private void Sync()
+        {
+            RedrawStatusText("正在对比文件...");
+
+            // 拉取服务器文件列表
+            bool isHasMore = true;
+            string marker = string.Empty;
+
+            while (isHasMore)
+            {
+                DumpRet dr = mRsfClient.ListPrefix(mBucket, "", marker);
+
+                // 存储文件到服务器文件列表
+                foreach (DumpItem item in dr.Items)
+                {
+                    mServerFileList.Add(new SyncFile(item.Key, item.PutTime));
+                }
+
+                if (dr.Marker != null)
+                    marker = dr.Marker;
+                else
+                    isHasMore = false;
+            }
+
+            // 获取本地文件列表
+            DirectoryInfo di = new DirectoryInfo(mSyncDir);
+            foreach (FileInfo fi in di.GetFiles())
+            {
+                mLocalFileList.Add(new SyncFile(fi.Name, fi.LastWriteTimeUtc.AddYears(-1969).Ticks));
+            }
+
+            // 文件差异对比及消除
+            for (int i = 0; i < mServerFileList.Count; i++)
+            {
+                int index = FindLocalFileIndex(mServerFileList[i].Name);
+                if (index == -1)
+                {
+                    RedrawStatusText("正在下载..." + mServerFileList[i].Name);
+                    WebClient wb = new WebClient { Proxy = null };
+                    wb.DownloadFile("http://" + mBucket + ".u.qiniudn.com/" + mServerFileList[i].Name,
+                        mSyncDir + "\\" + mServerFileList[i].Name);
+                    File.SetLastWriteTimeUtc(mSyncDir + "\\" + mServerFileList[i].Name,
+                        new DateTime(mServerFileList[i].Timestamp).AddYears(1969).ToLocalTime());
+                }
+                else if (mServerFileList[i].Timestamp > mLocalFileList[i].Timestamp)
+                {
+                    RedrawStatusText("正在更新..." + mServerFileList[i].Name);
+                    WebClient wb = new WebClient { Proxy = null };
+                    wb.DownloadFile("http://" + mBucket + ".u.qiniudn.com/" + mServerFileList[i].Name,
+                        mSyncDir + "\\" + mServerFileList[i].Name);
+                    File.SetLastWriteTimeUtc(mSyncDir + "\\" + mServerFileList[i].Name,
+                        new DateTime(mServerFileList[i].Timestamp).AddYears(1969).ToLocalTime());
+                }
+                else if (mServerFileList[i].Timestamp < mLocalFileList[i].Timestamp)
+                {
+                    RedrawStatusText("正在上传..." + mServerFileList[i].Name);
+                    mIsDonePut = false;
+                    PutFile(mServerFileList[i].Name, mSyncDir + "\\" + mServerFileList[i].Name);
+                    WaitUntilTure(mIsDonePut);
+                    Console.WriteLine(mPutRet.OK);
+                    if (mPutRet.OK)
+                        File.SetLastWriteTimeUtc(mSyncDir + "\\" + mServerFileList[i].Name,
+                            new DateTime(mRsClient.Stat(new EntryPath(mBucket, mServerFileList[i].Name)).PutTime).
+                            AddYears(1969).ToLocalTime());
+                }
+            }
+
+            // 本地完全差异文件上传
+
+
+            RedrawStatusText("同步完成");
+        }
+
+        // 查找本地文件列表中的匹配项
+        private int FindLocalFileIndex(string name)
+        {
+            for (int i = 0; i < mLocalFileList.Count; i++)
+            {
+                if (mLocalFileList[i].Name.Equals(name))
+                    return i;
+            }
+            return -1;
+        }
+
+        /// <summary>
+        /// 上传文件
+        /// </summary>
+        /// <param name="key">文件名称</param>
+        /// <param name="fname">本地文件名称</param>
+        public void PutFile(string key, string fname)
+        {
+            string upToken = new PutPolicy(mBucket).Token();
+            IOClient client = new IOClient();
+            client.PutFinished += (o, ret) =>
+            {
+                mPutRet = ret;
+                mIsDonePut = true;
+            };
+            client.PutFile(upToken, key, fname, null);
+        }
+
+        // 循环等待
+        public void WaitUntilTure(bool cond)
+        {
+            while (true)
+            {
+                if (cond)
+                    return;
+                Thread.Sleep(100);
+            }
         }
 
         #region 创建面板方法
@@ -635,6 +893,13 @@ namespace QiNiuDrive
                 TextInputMode = InputMode.Integer,
                 MaxLength = 5,
                 TextAlign = HorizontalAlignment.Center
+            };
+
+            // 创建空间名称文本框
+            CharmTextBox txtBucket = new CharmTextBox
+            {
+                Location = new Point(355 + MENU_WIDTH, 55 + TITLE_HEIGHT),
+                Width = 120,
             };
 
             // 创建 AccessKey 文本框
@@ -681,6 +946,7 @@ namespace QiNiuDrive
             txtSyncDir.TextChanged += txtSyncDir_TextChanged;
             btnViewPath.MouseClick += btnViewPath_MouseClick;
             txtSyncCycle.TextChanged += txtSyncDir_TextChanged;
+            txtBucket.TextChanged += txtSyncDir_TextChanged;
             lblQiniuOpen.MouseClick += lblQiniuOpen_MouseClick;
             txtAccessKey.TextChanged += txtSyncDir_TextChanged;
             btnViewAccessKey.MouseClick += btnViewAccessKey_MouseClick;
@@ -692,9 +958,10 @@ namespace QiNiuDrive
             this.Controls.Add(txtSyncCycle);
             this.Controls.Add(txtAccessKey);
             this.Controls.Add(txtSecretKey);
+            this.Controls.Add(txtBucket);
 
             // 创建同步设置面板控件集合
-            mSyncSettingControls = new List<Control> { txtSyncDir, txtSyncCycle, txtAccessKey, txtSecretKey };
+            mSyncSettingControls = new List<Control> { txtSyncDir, txtSyncCycle, txtAccessKey, txtSecretKey, txtBucket };
             mSyncSettingCharmControls = new List<CharmControl> { btnViewPath, lblQiniuOpen, btnViewAccessKey, btnViewSecretKey };
         }
 
@@ -737,6 +1004,9 @@ namespace QiNiuDrive
             // 同步周期
             g.DrawString("同步时间周期：", this.Font, Brushes.Black, 125, 60 + TITLE_HEIGHT);
             g.DrawString("（单位：秒）", this.Font, Brushes.Black, 270, 60 + TITLE_HEIGHT);
+
+            // 空间名称
+            g.DrawString("空间名称：", this.Font, Brushes.Black, 370, 60 + TITLE_HEIGHT);
 
             // 密钥管理
             g.DrawString("密钥管理", this.Font, Brushes.Black, new Point(22 + MENU_WIDTH, 100 + TITLE_HEIGHT));
