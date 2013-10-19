@@ -14,6 +14,7 @@
 using System;
 using System.IO;
 using System.Net;
+using System.Text;
 using System.Windows.Forms;
 using System.Drawing;
 using System.Threading;
@@ -24,6 +25,8 @@ using Qiniu.IO;
 using Qiniu.RS;
 using Qiniu.RSF;
 using Qiniu.Conf;
+
+using Newtonsoft.Json;
 
 using CharmCommonMethod;
 using CharmControlLibrary;
@@ -52,8 +55,9 @@ namespace QiNiuDrive
     public partial class FrmMain : Form
     {
         #region 常量
-        private const string APP_NAME = "七牛云盘";             // 软件名称
-        //private const string APP_VER = "v0.0.1";                // 软件版本
+        private const string APP_NAME = "七牛云盘";              // 软件名称
+        private const string APP_VER = "v0.0.6";              // 软件版本
+        private const int UPDATE_VERSION = 201310190;           // 更新版本
         private const string APP_CFG_PATH = "Config\\app.ini";  // 软件配置路径
         private const int TITLE_HEIGHT = 30;                    // 标题栏高度
         const int MENU_WIDTH = 90;                              // 菜单栏宽度
@@ -79,6 +83,7 @@ namespace QiNiuDrive
         private RSClient mRsClient;
         private List<SyncFile> mServerFileList; // 服务器文件列表
         private List<SyncFile> mLocalFileList;  // 本地文件列表
+        private List<string> mLocalFileCache;   // 本地文件缓存
         private PutRet mPutRet;                 // 上传返回结果
         #endregion
 
@@ -469,13 +474,27 @@ namespace QiNiuDrive
         {
             // 检查更新
             RedrawStatusText("正在检查更新...");
-            Thread.Sleep(1000);
+
+            WebClient wb = new WebClient { Proxy = null };
+            var dict =
+                JsonConvert.DeserializeObject<Dictionary<string, dynamic>>(
+                    wb.DownloadString("https://raw.github.com/Unknwon/qiniudrive/master/UPDATE.json"));
+            if (UPDATE_VERSION < (int)dict["version"])
+            {
+                CharmMessageBox msgbox = new CharmMessageBox();
+                msgbox.Show("尊敬的用户您好：\n\n" +
+                            "感谢您使用 " + APP_NAME + "，更高版本已经发布。\n\n" +
+                            "为了获得更好的用户体验，建议您立即更新！\n\n" +
+                            "请到 github.com/Unknwon/qiniudrive 获取最新下载地址。",
+                            "版本升级");
+            }
 
             // 初始化七牛服务
             mRsfClient = new RSFClient(mBucket);
             mRsClient = new RSClient();
             mServerFileList = new List<SyncFile>();
             mLocalFileList = new List<SyncFile>();
+            mLocalFileCache = new List<string>();
 
             RedrawStatusText("正在连接服务器...");
 
@@ -754,7 +773,9 @@ namespace QiNiuDrive
             else if (!mIsVaildKeys)
                 mStatusText = "无效的密钥";
 
-            this.Invalidate(new Rectangle(150, 6, 300, 24));
+            if (mStatusText.Length > 28)
+                mStatusText = mStatusText.Substring(0, 28) + "...";
+            this.Invalidate(new Rectangle(150, 6, 360, 24));
             mNotifyIcon.Text = APP_NAME + "\n" + mStatusText;
         }
 
@@ -778,6 +799,27 @@ namespace QiNiuDrive
         {
             RedrawStatusText("正在对比文件...");
 
+            // 获取本地文件列表
+            LoadLocalFiles("");
+
+            // 获取本地文件缓存
+            if (File.Exists("Data/file_cache_list"))
+            {
+                StreamReader sr = new StreamReader("Data/file_cache_list");
+                string[] files = sr.ReadToEnd().Split('\n');
+                sr.Close();
+
+                // 查找删除项
+                foreach (string f in files)
+                {
+                    string cacheName = f.TrimEnd('\r');
+                    if (f.Length <= 0 || FindLocalFileIndex(cacheName) != -1) continue;
+
+                    RedrawStatusText("正在删除..." + cacheName);
+                    mRsClient.Delete(new EntryPath(mBucket, cacheName));
+                }
+            }
+
             // 拉取服务器文件列表
             bool isHasMore = true;
             string marker = string.Empty;
@@ -795,9 +837,6 @@ namespace QiNiuDrive
                 else
                     isHasMore = false;
             }
-
-            // 获取本地文件列表
-            LoadLocalFiles("");
 
             // 文件差异对比及消除
             for (int i = 0; i < mServerFileList.Count; i++)
@@ -850,6 +889,7 @@ namespace QiNiuDrive
                 else if (mServerFileList[i].Timestamp == mLocalFileList[index].Timestamp)
                     mLocalFileList.RemoveAt(index);
                 // ReSharper restore AssignNullToNotNullAttribute
+                mLocalFileCache.Add(curServeFileName);
             }
 
             // 本地完全差异文件上传
@@ -871,6 +911,18 @@ namespace QiNiuDrive
                     mNotifyIcon.ShowBalloonTip(1000, "上载失败", mPutRet.Exception.Message, ToolTipIcon.Error);
                     return;
                 }
+                mLocalFileCache.Add(sf.Name);
+            }
+
+            // 保存本地文件缓存
+            StringBuilder sb = new StringBuilder();
+            foreach (string s in mLocalFileCache)
+                sb.AppendLine(s);
+            if (sb.Length > 0)
+            {
+                StreamWriter sw = new StreamWriter("Data/file_cache_list");
+                sw.Write(sb.ToString());
+                sw.Close();
             }
 
             RedrawStatusText("同步完成");
@@ -884,21 +936,20 @@ namespace QiNiuDrive
             // 检查文件
             DirectoryInfo di = new DirectoryInfo(mSyncDir + dirPrefix);
             foreach (FileInfo fi in di.GetFiles())
-                mLocalFileList.Add(new SyncFile((dirPrefix + fi.Name).TrimStart('\\').Replace("\\", "/"), (fi.LastWriteTimeUtc.Ticks - timeStamp.Ticks) / 10000000));
+                mLocalFileList.Add(new SyncFile((dirPrefix.TrimStart('\\') + "\\" + fi.Name).TrimStart('\\').Replace("\\", "/"),
+                    (fi.LastWriteTimeUtc.Ticks - timeStamp.Ticks) / 10000000));
 
             // 检查目录
             foreach (DirectoryInfo subDi in di.GetDirectories())
-                LoadLocalFiles("\\" + subDi.Name + "\\");
+                LoadLocalFiles(dirPrefix + "\\" + subDi.Name);
         }
 
         // 查找本地文件列表中的匹配项
         private int FindLocalFileIndex(string name)
         {
             for (int i = 0; i < mLocalFileList.Count; i++)
-            {
                 if (mLocalFileList[i].Name.Equals(name))
                     return i;
-            }
             return -1;
         }
 
@@ -1105,8 +1156,8 @@ namespace QiNiuDrive
                     "新浪微博：\n" +
                     "个人博客：暂未开通";
             g.DrawString(intro, font, Brushes.Black, 265, 205);
-            intro = "版权所有 @ 2013 无闻";
-            g.DrawString(intro, font, Brushes.Black, 265, 285);
+            intro = "软件版本：" + APP_VER + "   版权所有 @ 2013 无闻";
+            g.DrawString(intro, font, Brushes.Black, 205, 285);
             // 绘制七牛 LOGO
             g.DrawImage(Properties.Resources.qiniu_logo, 190, 330, 290, 45);
         }
