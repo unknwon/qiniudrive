@@ -788,9 +788,7 @@ namespace QiNiuDrive
 
                 // 存储文件到服务器文件列表
                 foreach (DumpItem item in dr.Items)
-                {
-                    mServerFileList.Add(new SyncFile(item.Key, item.PutTime));
-                }
+                    mServerFileList.Add(new SyncFile(item.Key, item.PutTime / 10000000));
 
                 if (dr.Marker != null)
                     marker = dr.Marker;
@@ -799,77 +797,98 @@ namespace QiNiuDrive
             }
 
             // 获取本地文件列表
-            DirectoryInfo di = new DirectoryInfo(mSyncDir);
-            foreach (FileInfo fi in di.GetFiles())
-                mLocalFileList.Add(new SyncFile(fi.Name, fi.LastWriteTimeUtc.AddYears(-1969).Ticks));
+            LoadLocalFiles("");
 
             // 文件差异对比及消除
             for (int i = 0; i < mServerFileList.Count; i++)
             {
                 int index = FindLocalFileIndex(mServerFileList[i].Name);
+                string curServeFileName = mServerFileList[i].Name.Replace("/", "\\");
+                string curDirPath = Path.GetDirectoryName(curServeFileName);
+                DateTime unixTime = new DateTime(1970, 1, 1).AddSeconds(mServerFileList[i].Timestamp);
+
+                // ReSharper disable AssignNullToNotNullAttribute
                 if (index == -1)
                 {
                     RedrawStatusText("正在下载..." + mServerFileList[i].Name);
+                    Directory.CreateDirectory(mSyncDir + "\\" + curDirPath);
                     WebClient wb = new WebClient { Proxy = null };
                     wb.DownloadFile("http://" + mBucket + ".u.qiniudn.com/" + mServerFileList[i].Name,
-                        mSyncDir + "\\" + mServerFileList[i].Name);
-                    File.SetLastWriteTimeUtc(mSyncDir + "\\" + mServerFileList[i].Name,
-                        new DateTime(mServerFileList[i].Timestamp).AddYears(1969).ToLocalTime());
+                        mSyncDir + "\\" + curServeFileName);
+                    File.SetLastWriteTimeUtc(mSyncDir + "\\" + curServeFileName, unixTime);
                 }
                 else if (mServerFileList[i].Timestamp > mLocalFileList[index].Timestamp)
                 {
                     RedrawStatusText("正在更新..." + mServerFileList[i].Name);
+                    Directory.CreateDirectory(mSyncDir + "\\" + curDirPath);
                     WebClient wb = new WebClient { Proxy = null };
                     wb.DownloadFile("http://" + mBucket + ".u.qiniudn.com/" + mServerFileList[i].Name,
-                        mSyncDir + "\\" + mServerFileList[i].Name);
-                    File.SetLastWriteTimeUtc(mSyncDir + "\\" + mServerFileList[i].Name,
-                        new DateTime(mServerFileList[i].Timestamp).AddYears(1969).ToLocalTime());
+                        mSyncDir + "\\" + curServeFileName);
+                    File.SetLastWriteTimeUtc(mSyncDir + "\\" + curServeFileName, unixTime);
                     mLocalFileList.RemoveAt(index);
                 }
                 else if (mServerFileList[i].Timestamp < mLocalFileList[index].Timestamp)
                 {
+                    mRsClient.Delete(new EntryPath(mBucket, mServerFileList[i].Name));
                     RedrawStatusText("正在上传..." + mServerFileList[i].Name);
                     mIsDonePut = false;
-                    PutFile(mServerFileList[i].Name, mSyncDir + "\\" + mServerFileList[i].Name);
+                    PutFile((mServerFileList[i].Name), mSyncDir + "\\" + mServerFileList[i].Name);
                     WaitUntilTure(mIsDonePut);
                     if (mPutRet.OK)
+                        // ReSharper disable once PossibleLossOfFraction
                         File.SetLastWriteTimeUtc(mSyncDir + "\\" + mServerFileList[i].Name,
-                            new DateTime(mRsClient.Stat(new EntryPath(mBucket, mServerFileList[i].Name)).PutTime).
-                                AddYears(1969).ToLocalTime());
+                            new DateTime(1970, 1, 1).AddSeconds(mRsClient.Stat(new EntryPath(mBucket, mServerFileList[i].Name)).PutTime / 10000000));
                     else
                     {
                         CheckException(mPutRet.Exception.Message);
                         RedrawStatusText("同步失败");
-                        mNotifyIcon.ShowBalloonTip(1000, "同步失败", mStatusText, ToolTipIcon.Error);
+                        mNotifyIcon.ShowBalloonTip(1000, "同步失败", mPutRet.Exception.Message, ToolTipIcon.Error);
                         return;
                     }
                     mLocalFileList.RemoveAt(index);
                 }
                 else if (mServerFileList[i].Timestamp == mLocalFileList[index].Timestamp)
                     mLocalFileList.RemoveAt(index);
+                // ReSharper restore AssignNullToNotNullAttribute
             }
 
             // 本地完全差异文件上传
             foreach (SyncFile sf in mLocalFileList)
             {
-                RedrawStatusText("正在上传..." + sf.Name);
+                RedrawStatusText("正在上载..." + sf.Name);
                 mIsDonePut = false;
-                PutFile(sf.Name, mSyncDir + "\\" + sf.Name);
+                PutFile(sf.Name.Replace("\\", "/"), mSyncDir + "\\" + sf.Name);
                 WaitUntilTure(mIsDonePut);
                 if (mPutRet.OK)
+                    // ReSharper disable once PossibleLossOfFraction
                     File.SetLastWriteTimeUtc(mSyncDir + "\\" + sf.Name,
-                        new DateTime(mRsClient.Stat(new EntryPath(mBucket, sf.Name)).PutTime).
-                            AddYears(1969).ToLocalTime());
+                        new DateTime(1970, 1, 1).AddSeconds(
+                            mRsClient.Stat(new EntryPath(mBucket, sf.Name.Replace("\\", "/"))).PutTime / 10000000));
                 else
                 {
                     CheckException(mPutRet.Exception.Message);
-                    RedrawStatusText("上传失败");
-                    mNotifyIcon.ShowBalloonTip(1000, "上传失败", mStatusText, ToolTipIcon.Error);
+                    RedrawStatusText("上载失败");
+                    mNotifyIcon.ShowBalloonTip(1000, "上载失败", mPutRet.Exception.Message, ToolTipIcon.Error);
                     return;
                 }
             }
 
             RedrawStatusText("同步完成");
+        }
+
+        // 加载本地文件（可用于递归操作）
+        private void LoadLocalFiles(string dirPrefix)
+        {
+            DateTime timeStamp = new DateTime(1970, 1, 1);
+
+            // 检查文件
+            DirectoryInfo di = new DirectoryInfo(mSyncDir + dirPrefix);
+            foreach (FileInfo fi in di.GetFiles())
+                mLocalFileList.Add(new SyncFile((dirPrefix + fi.Name).TrimStart('\\').Replace("\\", "/"), (fi.LastWriteTimeUtc.Ticks - timeStamp.Ticks) / 10000000));
+
+            // 检查目录
+            foreach (DirectoryInfo subDi in di.GetDirectories())
+                LoadLocalFiles("\\" + subDi.Name + "\\");
         }
 
         // 查找本地文件列表中的匹配项
