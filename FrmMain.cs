@@ -109,7 +109,7 @@ namespace QiNiuDrive
         #region 常量
         private const string APP_NAME = "七牛云盘";              // 软件名称
         private const string APP_VER = "v0.1.2";                // 软件版本
-        private const int UPDATE_VERSION = 201310190;           // 更新版本
+        private const int UPDATE_VERSION = 201310200;           // 更新版本
         private const string APP_CFG_PATH = "Config\\app.ini";  // 软件配置路径
         private const int TITLE_HEIGHT = 30;                    // 标题栏高度
         const int MENU_WIDTH = 90;                              // 菜单栏宽度
@@ -897,7 +897,8 @@ namespace QiNiuDrive
             }
             else
             {
-                mFileWatcher.Dispose();
+                if (mFileWatcher != null)
+                    mFileWatcher.Dispose();
                 mIsVaildSyncDir = false;
             }
 
@@ -1043,11 +1044,13 @@ namespace QiNiuDrive
                 // 处理改名文件
                 List<EntryPathPair> eppList = new List<EntryPathPair>();
                 foreach (ChangeFile cf in mChangeFileList)
-                {
-                    eppList.Add(new EntryPathPair(mBucket,
-                        cf.OldName.Replace("\\", "/"), cf.NewName.Replace("\\", "/")));
-                    Console.WriteLine("增加移动文件：{0} {1}", cf.OldName.Replace("\\", "/"), cf.NewName.Replace("\\", "/"));
-                }
+                    // 判断文件是否依旧存在
+                    if (File.Exists(mSyncDir + "\\" + cf.NewName))
+                    {
+                        eppList.Add(new EntryPathPair(mBucket,
+                            cf.OldName.Replace("\\", "/"), cf.NewName.Replace("\\", "/")));
+                        Console.WriteLine("增加移动文件：{0} {1}", cf.OldName.Replace("\\", "/"), cf.NewName.Replace("\\", "/"));
+                    }
                 mRsClient.BatchMove(eppList.ToArray());
             }
             #endregion
@@ -1465,7 +1468,7 @@ namespace QiNiuDrive
             btnViewPath.MouseClick += btnViewPath_MouseClick;
             txtSyncCycle.TextChanged += txtSyncDir_TextChanged;
             txtBucket.TextChanged += txtSyncDir_TextChanged;
-            chkPrivateBucket.MouseClick+=chkPrivateBucket_MouseClick;
+            chkPrivateBucket.MouseClick += chkPrivateBucket_MouseClick;
             lblQiniuOpen.MouseClick += lblQiniuOpen_MouseClick;
             txtAccessKey.TextChanged += txtSyncDir_TextChanged;
             btnViewAccessKey.MouseClick += btnViewAccessKey_MouseClick;

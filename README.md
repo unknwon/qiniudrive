@@ -4,7 +4,7 @@
 
 七牛云盘是基于七牛开放 API 构建的第三方同步程序。
 
-[v0.1 Beta 下载地址](http://drive.u.qiniudn.com/%E4%B8%83%E7%89%9B%E4%BA%91%E7%9B%98/%E4%B8%83%E7%89%9B%E4%BA%91%E7%9B%98.rar?download)
+[v0.1.2 下载地址](http://drive.u.qiniudn.com/%E4%B8%83%E7%89%9B%E4%BA%91%E7%9B%98/%E4%B8%83%E7%89%9B%E4%BA%91%E7%9B%98.rar?download)
 
 ## 开发初衷
 
