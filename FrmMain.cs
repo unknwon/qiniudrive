@@ -13,6 +13,7 @@
 #region 命名空间引用
 using System;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Text;
 using System.Windows.Forms;
@@ -85,6 +86,21 @@ namespace QiNiuDrive
             this.Type = type;
         }
     }
+
+    /// <summary>
+    /// 修改文件
+    /// </summary>
+    public struct ChangeFile
+    {
+        public string OldName;
+        public string NewName;
+
+        public ChangeFile(string oldName, string newName)
+        {
+            this.OldName = oldName;
+            this.NewName = newName;
+        }
+    }
     #endregion
 
     // 七牛云盘主窗口
@@ -92,7 +108,7 @@ namespace QiNiuDrive
     {
         #region 常量
         private const string APP_NAME = "七牛云盘";              // 软件名称
-        private const string APP_VER = "v0.1.0 Beta";              // 软件版本
+        private const string APP_VER = "v0.1.1";                // 软件版本
         private const int UPDATE_VERSION = 201310190;           // 更新版本
         private const string APP_CFG_PATH = "Config\\app.ini";  // 软件配置路径
         private const int TITLE_HEIGHT = 30;                    // 标题栏高度
@@ -118,10 +134,11 @@ namespace QiNiuDrive
         // * 七牛 *
         private RSFClient mRsfClient;
         private RSClient mRsClient;
-        private List<SyncFile> mServerFileList; // 服务器文件列表
-        private List<SyncFile> mLocalFileList;  // 本地文件列表
-        private List<string> mLocalFileCache;   // 本地文件缓存
-        private PutRet mPutRet;                 // 上传返回结果
+        private List<SyncFile> mServerFileList;     // 服务器文件列表
+        private List<SyncFile> mLocalFileList;      // 本地文件列表
+        private List<string> mLocalFileCache;       // 本地文件缓存
+        private List<ChangeFile> mChangeFileList;   // 修改文件列表
+        private PutRet mPutRet;                     // 上传返回结果
         #endregion
 
         #region 同步设置
@@ -136,6 +153,8 @@ namespace QiNiuDrive
         private string mBucket = string.Empty;  // 空间名称
         private bool mIsDonePut;                // 指示是否完成上传
         private bool mIsSyncNow;                // 指示是否立即同步
+        private bool mIsSyncing;                // 指示是否正在同步
+        private FileSystemWatcher mFileWatcher; // 文件监视器
 
         // * 用户控件 *
         private List<Control> mSyncSettingControls;             // 同步设置控件集合
@@ -410,19 +429,30 @@ namespace QiNiuDrive
             // 判断用户单击的菜单项
             switch (clickIndex)
             {
-                case 0: // 显示主界面
+                case 0: // 设置中心
                     mNotifyIcon_MouseClick(new object(), new MouseEventArgs(MouseButtons.Left, 0, 0, 0, 0));
                     break;
-                case 2: // 立即同步
+                case 1: // 打开同步目录
+                    if (mIsVaildSyncDir)
+                        Process.Start(mSyncDir);
+                    else
+                    {
+                        CharmMessageBox msgbox = new CharmMessageBox();
+                        msgbox.Show("您的操作由于以下原因导致失败：\n\n" +
+                            "- 未设置有效的同步目录",
+                            "操作失败", MessageBoxButtons.OK, CharmMessageBoxIcon.Error);
+                    }
+                    break;
+                case 3: // 立即同步
                     mIsSyncNow = true;
                     break;
-                case 4: // 关于
+                case 5: // 关于
                     mMenuSelectedIndex = 3;
                     ShowPanels();
                     this.Invalidate();
                     mNotifyIcon_MouseClick(new object(), new MouseEventArgs(MouseButtons.Left, 0, 0, 0, 0));
                     break;
-                case 5: // 退出
+                case 6: // 退出
                     btnClose_MouseClick(new object(), new MouseEventArgs(MouseButtons.Left, 0, 0, 0, 0));
                     break;
             }
@@ -440,9 +470,12 @@ namespace QiNiuDrive
         // 取消按钮被单击事件
         private void btnCancel_MouseClick(object sender, MouseEventArgs e)
         {
-            mBtnApply.Enabled = false;
-            mIsLoadFinished = false;
-            LoadLocalSetting();
+            if (mBtnApply.Enabled)
+            {
+                mBtnApply.Enabled = false;
+                mIsLoadFinished = false;
+                LoadLocalSetting();
+            }
             this.Visible = false;
         }
 
@@ -536,6 +569,24 @@ namespace QiNiuDrive
                         ((CharmTextBox)mSyncSettingControls[3]).Text,
                         "查看密钥");
         }
+
+        // 文件监视器捕捉到重命名事件
+        private void mFileWatcher_Renamed(object source, RenamedEventArgs e)
+        {
+            if (mIsSyncing) return;
+
+            int index = FindChangeFileIndex(e.OldName);
+            if (index == -1)
+                mChangeFileList.Add(new ChangeFile(e.OldName, e.Name));
+            else
+            {
+                // 判断是否改回了原来的名字
+                if (!mChangeFileList[index].OldName.Equals(e.Name))
+                    mChangeFileList.Add(new ChangeFile(mChangeFileList[index].OldName, e.Name));
+                mChangeFileList.RemoveAt(index);
+            }
+            Console.WriteLine("{0} {1}", e.OldName, e.Name);
+        }
         #endregion
 
         #region 高级设置
@@ -599,6 +650,7 @@ namespace QiNiuDrive
             mServerFileList = new List<SyncFile>();
             mLocalFileList = new List<SyncFile>();
             mLocalFileCache = new List<string>();
+            mChangeFileList = new List<ChangeFile>();
 
             RedrawStatusText("正在连接服务器...");
 
@@ -620,8 +672,10 @@ namespace QiNiuDrive
                     mIsVaildKeys && mIsVaildBucket && mIsVaildSyncDir)
                 {
                     count = 0;
-                    mIsSyncNow = false;
+                    mIsSyncing = true;
                     Sync();
+                    mIsSyncNow = false;
+                    mIsSyncing = false;
                     mServerFileList.Clear();
                     mLocalFileList.Clear();
                 }
@@ -730,6 +784,7 @@ namespace QiNiuDrive
             mTaryMenu = new CharmMenu();
             mTaryMenu.AddItem("设置中心", MenuItemType.TextItem,
                 new Bitmap(Properties.Resources.logo, 16, 16));
+            mTaryMenu.AddItem("打开同步目录", MenuItemType.TextItem);
             mTaryMenu.AddItem("", MenuItemType.Spliter);
             mTaryMenu.AddItem("立即同步", MenuItemType.TextItem);
             mTaryMenu.AddItem("", MenuItemType.Spliter);
@@ -821,10 +876,23 @@ namespace QiNiuDrive
             if (mSyncDir.Length > 0 && Directory.Exists(mSyncDir))
             {
                 ((CharmTextBox)mSyncSettingControls[0]).Text = mSyncDir;
+
+                // 初始化文件监视器
+                if (mFileWatcher == null)
+                {
+                    mFileWatcher = new FileSystemWatcher { IncludeSubdirectories = true };
+                    mFileWatcher.Renamed += mFileWatcher_Renamed;
+                }
+
+                mFileWatcher.Path = mSyncDir;
+                mFileWatcher.EnableRaisingEvents = true;
                 mIsVaildSyncDir = true;
             }
             else
+            {
+                mFileWatcher.Dispose();
                 mIsVaildSyncDir = false;
+            }
 
             // 获取同步周期
             try
@@ -954,6 +1022,16 @@ namespace QiNiuDrive
         // 同步
         private void Sync()
         {
+            if (mChangeFileList.Count > 0)
+            {
+                RedrawStatusText("正在移动文件...");
+
+                // 处理改名文件
+                mRsClient.BatchMove(
+                    mChangeFileList.Select(cf => new EntryPathPair(mBucket,
+                        cf.OldName.Replace("\\", "/"), cf.NewName.Replace("\\", "/"))).ToArray());
+            }
+
             RedrawStatusText("正在对比文件...");
 
             // 获取本地文件列表
@@ -973,7 +1051,7 @@ namespace QiNiuDrive
                 {
                     string cacheName = f.TrimEnd('\r').Replace("\\", "/");
 
-                    if (IsNeedFilter(cacheName)) continue;
+                    if (IsNeedFilter(cacheName) || FindLocalCacheIndex(cacheName) > -1) continue;
 
                     if (cacheName.Length <= 0 || FindLocalFileIndex(cacheName) != -1)
                     {
@@ -987,6 +1065,8 @@ namespace QiNiuDrive
                     Thread.Sleep(1000);
                 }
             }
+
+            mChangeFileList.Clear();
 
             // 拉取服务器文件列表
             bool isHasMore = true;
@@ -1038,10 +1118,9 @@ namespace QiNiuDrive
                 }
                 else if (mServerFileList[i].Timestamp < mLocalFileList[index].Timestamp)
                 {
-                    mRsClient.Delete(new EntryPath(mBucket, mServerFileList[i].Name));
                     RedrawStatusText("正在上传..." + mServerFileList[i].Name);
                     mIsDonePut = false;
-                    PutFile((mServerFileList[i].Name), mSyncDir + "\\" + mServerFileList[i].Name);
+                    PutFile(mServerFileList[i].Name, mSyncDir + "\\" + mServerFileList[i].Name, true);
                     WaitUntilTure(mIsDonePut);
                     if (mPutRet.OK)
                         // ReSharper disable once PossibleLossOfFraction
@@ -1153,6 +1232,16 @@ namespace QiNiuDrive
                 LoadLocalFiles(dirPrefix + "\\" + subDi.Name);
         }
 
+        // 查找修改文件列表中的匹配项
+        private int FindChangeFileIndex(string name)
+        {
+            for (int i = 0; i < mChangeFileList.Count; i++)
+                if (name.Equals(mChangeFileList[i].OldName) ||
+                    name.Equals(mChangeFileList[i].NewName))
+                    return i;
+            return -1;
+        }
+
         // 查找本地文件列表中的匹配项
         private int FindLocalFileIndex(string name)
         {
@@ -1176,9 +1265,14 @@ namespace QiNiuDrive
         /// </summary>
         /// <param name="key">文件名称</param>
         /// <param name="fname">本地文件名称</param>
-        private void PutFile(string key, string fname)
+        /// <param name="rewrite">是否覆盖</param>
+        private void PutFile(string key, string fname, bool rewrite = false)
         {
-            string upToken = new PutPolicy(mBucket).Token();
+            string scope = mBucket;
+            if (rewrite)
+                scope += ":" + key;
+
+            string upToken = new PutPolicy(scope).Token();
             IOClient client = new IOClient();
             client.PutFinished += (o, ret) =>
             {
