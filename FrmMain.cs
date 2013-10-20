@@ -574,7 +574,7 @@ namespace QiNiuDrive
                 WebClient wb = new WebClient { Proxy = null };
                 var dict =
                     JsonConvert.DeserializeObject<Dictionary<string, dynamic>>(
-                        wb.DownloadString("http://drive.u.qiniudn.com/UPDATE.json"));
+                        wb.DownloadString("http://drive.u.qiniudn.com/%E4%B8%83%E7%89%9B%E4%BA%91%E7%9B%98/UPDATE.json?download"));
                 if (UPDATE_VERSION < (int)dict["version"])
                 {
                     CharmMessageBox msgbox = new CharmMessageBox();
@@ -971,7 +971,7 @@ namespace QiNiuDrive
                 // 查找删除项
                 foreach (string f in files)
                 {
-                    string cacheName = f.TrimEnd('\r');
+                    string cacheName = f.TrimEnd('\r').Replace("\\", "/");
 
                     if (IsNeedFilter(cacheName)) continue;
 
