@@ -34,6 +34,27 @@ using CharmControlLibrary;
 
 namespace QiNiuDrive
 {
+    #region 枚举
+    /// <summary>
+    /// 过滤类型：前缀，后缀，全匹配
+    /// </summary>
+    public enum FilterType
+    {
+        /// <summary>
+        /// 过滤类型：前缀
+        /// </summary>
+        Prefix,
+        /// <summary>
+        /// 过滤类型：后缀
+        /// </summary>
+        Suffix,
+        /// <summary>
+        /// 过滤类型：全匹配
+        /// </summary>
+        FullMatch
+    }
+    #endregion
+
     #region 结构
     /// <summary>
     /// 同步文件
@@ -49,6 +70,21 @@ namespace QiNiuDrive
             this.Timestamp = timestamp;
         }
     }
+
+    /// <summary>
+    /// 过滤器
+    /// </summary>
+    public struct Filter
+    {
+        public FilterType Type;
+        public string Name;
+
+        public Filter(string name, FilterType type)
+        {
+            this.Name = name;
+            this.Type = type;
+        }
+    }
     #endregion
 
     // 七牛云盘主窗口
@@ -56,7 +92,7 @@ namespace QiNiuDrive
     {
         #region 常量
         private const string APP_NAME = "七牛云盘";              // 软件名称
-        private const string APP_VER = "v0.0.6";              // 软件版本
+        private const string APP_VER = "v0.1.0 Beta";              // 软件版本
         private const int UPDATE_VERSION = 201310190;           // 更新版本
         private const string APP_CFG_PATH = "Config\\app.ini";  // 软件配置路径
         private const int TITLE_HEIGHT = 30;                    // 标题栏高度
@@ -77,6 +113,7 @@ namespace QiNiuDrive
         private readonly ToolTip mToolTip = new ToolTip();  // 工具提示文本控件
         private NotifyIcon mNotifyIcon;                     // 托盘图标
         private CharmButton mBtnApply;                      // 应用按钮
+        private CharmMenu mTaryMenu;                        // 托盘菜单
 
         // * 七牛 *
         private RSFClient mRsfClient;
@@ -98,11 +135,20 @@ namespace QiNiuDrive
         private int mSyncCycle;                 // 同步周期
         private string mBucket = string.Empty;  // 空间名称
         private bool mIsDonePut;                // 指示是否完成上传
+        private bool mIsSyncNow;                // 指示是否立即同步
 
         // * 用户控件 *
         private List<Control> mSyncSettingControls;             // 同步设置控件集合
         // 0-同步目录文本框；1-同步周期文本框；2-AccessKey 文本框；3-SecretKey 文本框；4-空间名称文本框
         private List<CharmControl> mSyncSettingCharmControls;   // 同步设置面板 Charm 控件集合
+        #endregion
+
+        #region 高级设置
+        // * 私有字段 *
+        private List<Filter> mFilterList; // 过滤器列表
+
+        // * 用户控件 *
+        private List<CharmControl> mAdvancedSettingCharmControls;   // 高级设置面板 Charm 控件集合
         #endregion
 
         #region 关于
@@ -142,6 +188,9 @@ namespace QiNiuDrive
             {
                 case 0: // 同步设置
                     CharmControl.MouseClickEvent(e, mSyncSettingCharmControls);
+                    break;
+                case 1: // 高级设置
+                    CharmControl.MouseClickEvent(e, mAdvancedSettingCharmControls);
                     break;
                 case 3: // 关于
                     CharmControl.MouseClickEvent(e, mAboutCharmControls);
@@ -189,6 +238,9 @@ namespace QiNiuDrive
                 case 0: // 同步设置
                     isCaptureEvent = CharmControl.MouseDownEvent(e, mSyncSettingCharmControls, this);
                     break;
+                case 1: // 高级设置
+                    isCaptureEvent = CharmControl.MouseDownEvent(e, mAdvancedSettingCharmControls, this);
+                    break;
                 case 3: // 关于
                     isCaptureEvent = CharmControl.MouseDownEvent(e, mAboutCharmControls, this);
                     break;
@@ -213,6 +265,9 @@ namespace QiNiuDrive
                 case 0: // 同步设置
                     CharmControl.MouseMoveEvent(e, mSyncSettingCharmControls, this, mToolTip);
                     break;
+                case 1: // 高级设置
+                    CharmControl.MouseMoveEvent(e, mAdvancedSettingCharmControls, this, mToolTip);
+                    break;
                 case 3: // 关于
                     CharmControl.MouseMoveEvent(e, mAboutCharmControls, this, mToolTip);
                     break;
@@ -232,6 +287,9 @@ namespace QiNiuDrive
             {
                 case 0: // 同步设置
                     CharmControl.MouseUpEvent(e, mSyncSettingCharmControls, this);
+                    break;
+                case 1: // 高级设置
+                    CharmControl.MouseUpEvent(e, mAdvancedSettingCharmControls, this);
                     break;
                 case 3: // 关于
                     CharmControl.MouseUpEvent(e, mAboutCharmControls, this);
@@ -277,6 +335,10 @@ namespace QiNiuDrive
                 case 0: // 同步设置
                     DrawSyncSettingPanel(g);
                     CharmControl.PaintEvent(e.Graphics, mSyncSettingCharmControls);
+                    break;
+                case 1: // 高级设置
+                    DrawAdvancedSettingPanel(g);
+                    CharmControl.PaintEvent(e.Graphics, mAdvancedSettingCharmControls);
                     break;
                 case 3: // 关于
                     DrawAboutPanel(g);
@@ -337,10 +399,33 @@ namespace QiNiuDrive
                 this.TopMost = true;
                 this.TopMost = false;
             }
-            //else
-            //{
-            //    // 显示托盘菜单
-            //}
+            else
+                // 显示托盘菜单
+                mTaryMenu.Show();
+        }
+
+        // 托盘菜单被单击事件
+        private void mTaryMenu_MenuClick(int clickIndex)
+        {
+            // 判断用户单击的菜单项
+            switch (clickIndex)
+            {
+                case 0: // 显示主界面
+                    mNotifyIcon_MouseClick(new object(), new MouseEventArgs(MouseButtons.Left, 0, 0, 0, 0));
+                    break;
+                case 2: // 立即同步
+                    mIsSyncNow = true;
+                    break;
+                case 4: // 关于
+                    mMenuSelectedIndex = 3;
+                    ShowPanels();
+                    this.Invalidate();
+                    mNotifyIcon_MouseClick(new object(), new MouseEventArgs(MouseButtons.Left, 0, 0, 0, 0));
+                    break;
+                case 5: // 退出
+                    btnClose_MouseClick(new object(), new MouseEventArgs(MouseButtons.Left, 0, 0, 0, 0));
+                    break;
+            }
         }
 
         // 确定按钮被单击事件
@@ -453,6 +538,15 @@ namespace QiNiuDrive
         }
         #endregion
 
+        #region 高级设置
+        // 重载过滤规则按钮被单击事件
+        private void btnReloadFilter_MouseClick(object sender, MouseEventArgs e)
+        {
+            LoadFilterList();
+            RedrawStatusText("过滤规则已重载");
+        }
+        #endregion
+
         #region 关于
         // GitHub 链接标签鼠标单击事件
         private static void lblGithub_MouseClick(object sender, MouseEventArgs e)
@@ -522,10 +616,11 @@ namespace QiNiuDrive
                 proc.MaxWorkingSet = Process.GetCurrentProcess().MaxWorkingSet;
                 proc.Dispose();
 #endif
-                if (mSyncCycle != 0 && count % mSyncCycle == 0 &&
+                if (((mSyncCycle != 0 && count % mSyncCycle == 0) || mIsSyncNow) &&
                     mIsVaildKeys && mIsVaildBucket && mIsVaildSyncDir)
                 {
                     count = 0;
+                    mIsSyncNow = false;
                     Sync();
                     mServerFileList.Clear();
                     mLocalFileList.Clear();
@@ -613,6 +708,8 @@ namespace QiNiuDrive
             #region 创建主体区域
             // 创建同步设置面板
             CreateSyncSettingPanel();
+            // 创建高级设置面板
+            CreateAdvancedSettingPanel();
             // 创建关于面板
             CreateAboutPanel();
             #endregion
@@ -627,6 +724,21 @@ namespace QiNiuDrive
                 mStatusText = "无效的同步目录";
             else
                 mStatusText = "正在初始化...";
+
+            #region 创建菜单
+            // 创建托盘菜单
+            mTaryMenu = new CharmMenu();
+            mTaryMenu.AddItem("设置中心", MenuItemType.TextItem,
+                new Bitmap(Properties.Resources.logo, 16, 16));
+            mTaryMenu.AddItem("", MenuItemType.Spliter);
+            mTaryMenu.AddItem("立即同步", MenuItemType.TextItem);
+            mTaryMenu.AddItem("", MenuItemType.Spliter);
+            mTaryMenu.AddItem("关于", MenuItemType.TextItem);
+            mTaryMenu.AddItem("退出", MenuItemType.TextItem);
+
+            // 关联控件事件
+            mTaryMenu.MenuClick += mTaryMenu_MenuClick;
+            #endregion
 
             #region 创建托盘图标
             // 创建托盘图标
@@ -724,8 +836,8 @@ namespace QiNiuDrive
                 mSyncCycle = 60;
             }
 
-            if (mSyncCycle < 60)
-                mSyncCycle = 60;
+            if (mSyncCycle < 10)
+                mSyncCycle = 10;
             ((CharmTextBox)mSyncSettingControls[1]).Text = Convert.ToString(mSyncCycle);
 
             // 获取空间名称
@@ -753,7 +865,42 @@ namespace QiNiuDrive
             }
             #endregion
 
+            #region 高级设置
+            LoadFilterList();
+            #endregion
+
             mIsLoadFinished = true;
+        }
+
+        // 加载过滤器列表
+        private void LoadFilterList()
+        {
+            if (!File.Exists("Config/filter.txt")) return;
+
+            if (mFilterList == null)
+                mFilterList = new List<Filter>();
+            else
+                mFilterList.Clear();
+
+            StreamReader sr = new StreamReader("Config/filter.txt");
+            string[] filters = sr.ReadToEnd().Split('\n');
+            sr.Close();
+
+            foreach (string f in filters)
+            {
+                string name = f.TrimEnd('\r');
+                if (name.Length <= 0) continue;
+
+                int index = name.IndexOf('*');
+
+                // 判断过滤类型
+                if (index == 0) // 后缀
+                    mFilterList.Add(new Filter(name.Substring(1), FilterType.Suffix));
+                else if (index == name.Length - 1)  // 前缀
+                    mFilterList.Add(new Filter(name.Substring(0, name.Length - 1), FilterType.Prefix));
+                else    // 全匹配
+                    mFilterList.Add(new Filter(name, FilterType.FullMatch));
+            }
         }
 
         // 显示面板
@@ -825,7 +972,10 @@ namespace QiNiuDrive
                 foreach (string f in files)
                 {
                     string cacheName = f.TrimEnd('\r');
-                    if (f.Length <= 0 || FindLocalFileIndex(cacheName) != -1)
+
+                    if (IsNeedFilter(cacheName)) continue;
+
+                    if (cacheName.Length <= 0 || FindLocalFileIndex(cacheName) != -1)
                     {
                         mLocalFileCache.Add(cacheName);
                         continue;
@@ -837,7 +987,7 @@ namespace QiNiuDrive
                     Thread.Sleep(1000);
                 }
             }
-            
+
             // 拉取服务器文件列表
             bool isHasMore = true;
             string marker = string.Empty;
@@ -848,7 +998,8 @@ namespace QiNiuDrive
 
                 // 存储文件到服务器文件列表
                 foreach (DumpItem item in dr.Items)
-                    mServerFileList.Add(new SyncFile(item.Key, item.PutTime / 10000000));
+                    if (!IsNeedFilter(item.Key))
+                        mServerFileList.Add(new SyncFile(item.Key, item.PutTime / 10000000));
 
                 if (dr.Marker != null)
                     marker = dr.Marker;
@@ -955,6 +1106,31 @@ namespace QiNiuDrive
             RedrawStatusText("同步完成");
         }
 
+        // 判断是否需要过滤
+        private bool IsNeedFilter(string name)
+        {
+            if (mFilterList == null) return false;
+
+            foreach (Filter f in mFilterList)
+                switch (f.Type)
+                {
+                    case FilterType.Prefix:
+                        if (name.StartsWith(f.Name))
+                            return true;
+                        break;
+                    case FilterType.Suffix:
+                        if (name.EndsWith(f.Name))
+                            return true;
+                        break;
+                    case FilterType.FullMatch:
+                        if (name.Equals(f.Name))
+                            return true;
+                        break;
+                }
+
+            return false;
+        }
+
         // 加载本地文件（可用于递归操作）
         private void LoadLocalFiles(string dirPrefix)
         {
@@ -963,8 +1139,14 @@ namespace QiNiuDrive
             // 检查文件
             DirectoryInfo di = new DirectoryInfo(mSyncDir + dirPrefix);
             foreach (FileInfo fi in di.GetFiles())
-                mLocalFileList.Add(new SyncFile((dirPrefix.TrimStart('\\') + "\\" + fi.Name).TrimStart('\\').Replace("\\", "/"),
-                    (fi.LastWriteTimeUtc.Ticks - timeStamp.Ticks) / 10000000));
+            {
+                string fileName = (dirPrefix.TrimStart('\\') + "\\" + fi.Name).TrimStart('\\').Replace("\\", "/");
+                if (!IsNeedFilter(fileName))
+                    mLocalFileList.Add(
+                        new SyncFile(fileName, (fi.LastWriteTimeUtc.Ticks - timeStamp.Ticks) / 10000000));
+                else
+                    Console.WriteLine("过滤 " + fileName);
+            }
 
             // 检查目录
             foreach (DirectoryInfo subDi in di.GetDirectories())
@@ -1123,6 +1305,26 @@ namespace QiNiuDrive
             mSyncSettingCharmControls = new List<CharmControl> { btnViewPath, lblQiniuOpen, btnViewAccessKey, btnViewSecretKey };
         }
 
+        // 创建高级设置面板
+        private void CreateAdvancedSettingPanel()
+        {
+            // 创建浏览路径按钮
+            CharmButton btnReloadFilter = new CharmButton
+            {
+                ButtonType = ButtonType.Classic_Size_12425,
+                Text = "重载过滤规则",
+                ForeColor = Color.MediumPurple,
+                Location = new Point(45 + MENU_WIDTH, 50 + TITLE_HEIGHT)
+
+            };
+
+            // 关联控件事件
+            btnReloadFilter.MouseClick += btnReloadFilter_MouseClick;
+
+            // 创建同步设置面板控件集合
+            mAdvancedSettingCharmControls = new List<CharmControl> { btnReloadFilter };
+        }
+
         // 创建关于面板
         private void CreateAboutPanel()
         {
@@ -1172,6 +1374,14 @@ namespace QiNiuDrive
             g.DrawString("Access Key：", this.Font, Brushes.Black, 125, 130 + TITLE_HEIGHT);
             g.DrawString("Secret Key：", this.Font, Brushes.Black, 125, 165 + TITLE_HEIGHT);
             g.DrawString("申请注册七牛开发者帐号：", this.Font, Brushes.Black, 125, 200 + TITLE_HEIGHT);
+        }
+
+        // 绘制高级设置面板
+        private void DrawAdvancedSettingPanel(Graphics g)
+        {
+            // 文件过滤
+            g.DrawString("文件过滤", this.Font, Brushes.Black, new Point(22 + MENU_WIDTH, 22 + TITLE_HEIGHT));
+            g.DrawLine(Pens.DarkGray, 90 + MENU_WIDTH, 32 + TITLE_HEIGHT, this.Width - 50, 32 + TITLE_HEIGHT);
         }
 
         // 绘制关于面板
