@@ -13,7 +13,6 @@
 #region 命名空间引用
 using System;
 using System.IO;
-using System.Linq;
 using System.Net;
 using System.Text;
 using System.Windows.Forms;
@@ -23,6 +22,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 
 using Qiniu.IO;
+using Qiniu.RPC;
 using Qiniu.RS;
 using Qiniu.RSF;
 using Qiniu.Conf;
@@ -108,7 +108,7 @@ namespace QiNiuDrive
     {
         #region 常量
         private const string APP_NAME = "七牛云盘";              // 软件名称
-        private const string APP_VER = "v0.1.1";                // 软件版本
+        private const string APP_VER = "v0.1.2";                // 软件版本
         private const int UPDATE_VERSION = 201310190;           // 更新版本
         private const string APP_CFG_PATH = "Config\\app.ini";  // 软件配置路径
         private const int TITLE_HEIGHT = 30;                    // 标题栏高度
@@ -151,6 +151,7 @@ namespace QiNiuDrive
         private string mSyncDir;                // 同步目录
         private int mSyncCycle;                 // 同步周期
         private string mBucket = string.Empty;  // 空间名称
+        private bool mIsPrivateBucket;          // 指示是否为私有空间
         private bool mIsDonePut;                // 指示是否完成上传
         private bool mIsSyncNow;                // 指示是否立即同步
         private bool mIsSyncing;                // 指示是否正在同步
@@ -160,6 +161,7 @@ namespace QiNiuDrive
         private List<Control> mSyncSettingControls;             // 同步设置控件集合
         // 0-同步目录文本框；1-同步周期文本框；2-AccessKey 文本框；3-SecretKey 文本框；4-空间名称文本框
         private List<CharmControl> mSyncSettingCharmControls;   // 同步设置面板 Charm 控件集合
+        // 4-私有空间检查框
         #endregion
 
         #region 高级设置
@@ -489,6 +491,7 @@ namespace QiNiuDrive
             IniOperation.WriteValue(APP_CFG_PATH, "setting", "sync_dir", ((CharmTextBox)mSyncSettingControls[0]).Text);
             IniOperation.WriteValue(APP_CFG_PATH, "setting", "sync_cycle", ((CharmTextBox)mSyncSettingControls[1]).Text);
             IniOperation.WriteValue(APP_CFG_PATH, "setting", "bucket", ((CharmTextBox)mSyncSettingControls[4]).Text);
+            IniOperation.WriteValue(APP_CFG_PATH, "setting", "private_bucket", (mSyncSettingCharmControls[4]).Checked.ToString());
 
             string accessKey = ((CharmTextBox)mSyncSettingControls[2]).Text;
             string secretKey = ((CharmTextBox)mSyncSettingControls[3]).Text;
@@ -544,10 +547,14 @@ namespace QiNiuDrive
                 ((CharmTextBox)mSyncSettingControls[0]).Text = folderBrowserFialog.SelectedPath;    // 用户指定新的目录
         }
 
-        // 七牛开发平台链接标签鼠标单击事件
-        private static void lblQiniuOpen_MouseClick(object sender, MouseEventArgs e)
+        // 私有空间检查框被单击事件
+        private void chkPrivateBucket_MouseClick(object sender, MouseEventArgs e)
         {
-            Process.Start("https://portal.qiniu.com/");
+            // 首次启动时程序数据加载时不作响应
+            if (!mIsLoadFinished || mBtnApply.Enabled) return;
+
+            mBtnApply.Enabled = true;
+            this.Invalidate(mBtnApply.ClientRectangle); // 重绘控件
         }
 
         // 查看 AccessKey 按钮被单击事件
@@ -570,22 +577,22 @@ namespace QiNiuDrive
                         "查看密钥");
         }
 
+        // 七牛开发平台链接标签鼠标单击事件
+        private static void lblQiniuOpen_MouseClick(object sender, MouseEventArgs e)
+        {
+            Process.Start("https://portal.qiniu.com/");
+        }
+
         // 文件监视器捕捉到重命名事件
         private void mFileWatcher_Renamed(object source, RenamedEventArgs e)
         {
             if (mIsSyncing) return;
 
-            int index = FindChangeFileIndex(e.OldName);
-            if (index == -1)
-                mChangeFileList.Add(new ChangeFile(e.OldName, e.Name));
+            // 判断是否为目录改名
+            if (Directory.Exists(e.FullPath))
+                DirectoryRenameEvent(e.OldFullPath, e.FullPath);
             else
-            {
-                // 判断是否改回了原来的名字
-                if (!mChangeFileList[index].OldName.Equals(e.Name))
-                    mChangeFileList.Add(new ChangeFile(mChangeFileList[index].OldName, e.Name));
-                mChangeFileList.RemoveAt(index);
-            }
-            Console.WriteLine("{0} {1}", e.OldName, e.Name);
+                FileRenameEvent(e.OldName, e.Name);
         }
         #endregion
 
@@ -914,6 +921,12 @@ namespace QiNiuDrive
                 ((CharmTextBox)mSyncSettingControls[4]).Text = mBucket;
             else
                 mIsVaildBucket = false;
+            // 私有空间
+            if (IniOperation.ReadValue(APP_CFG_PATH, "setting", "private_bucket").Equals("True"))
+            {
+                mIsPrivateBucket = true;
+                mSyncSettingCharmControls[4].Checked = true;
+            }
 
             // 获取密钥
             if (File.Exists("Config/KEY"))
@@ -1022,16 +1035,24 @@ namespace QiNiuDrive
         // 同步
         private void Sync()
         {
+            #region 文件重命名处理
             if (mChangeFileList.Count > 0)
             {
                 RedrawStatusText("正在移动文件...");
 
                 // 处理改名文件
-                mRsClient.BatchMove(
-                    mChangeFileList.Select(cf => new EntryPathPair(mBucket,
-                        cf.OldName.Replace("\\", "/"), cf.NewName.Replace("\\", "/"))).ToArray());
+                List<EntryPathPair> eppList = new List<EntryPathPair>();
+                foreach (ChangeFile cf in mChangeFileList)
+                {
+                    eppList.Add(new EntryPathPair(mBucket,
+                        cf.OldName.Replace("\\", "/"), cf.NewName.Replace("\\", "/")));
+                    Console.WriteLine("增加移动文件：{0} {1}", cf.OldName.Replace("\\", "/"), cf.NewName.Replace("\\", "/"));
+                }
+                mRsClient.BatchMove(eppList.ToArray());
             }
+            #endregion
 
+            #region 文件删除处理
             RedrawStatusText("正在对比文件...");
 
             // 获取本地文件列表
@@ -1049,24 +1070,33 @@ namespace QiNiuDrive
                 // 查找删除项
                 foreach (string f in files)
                 {
-                    string cacheName = f.TrimEnd('\r').Replace("\\", "/");
+                    string cacheName = f.TrimEnd('\r');
+                    // 判断文件是否被移动
+                    if (cacheName.Length <= 0 || FindChangeFileIndex(cacheName) > -1) continue;
 
-                    if (IsNeedFilter(cacheName) || FindLocalCacheIndex(cacheName) > -1) continue;
+                    cacheName = cacheName.Replace("\\", "/");
+                    if (IsNeedFilter(cacheName)) continue;
 
-                    if (cacheName.Length <= 0 || FindLocalFileIndex(cacheName) != -1)
+                    if (FindLocalFileIndex(cacheName) != -1)
                     {
                         mLocalFileCache.Add(cacheName);
                         continue;
                     }
 
                     RedrawStatusText("正在删除（上行）..." + cacheName);
-                    if (!mRsClient.Delete(new EntryPath(mBucket, cacheName)).OK)
-                        RedrawStatusText("删除失败..." + cacheName);
-                    Thread.Sleep(1000);
+                    CallRet cr = mRsClient.Delete(new EntryPath(mBucket, cacheName));
+                    if (!cr.OK)
+                    {
+                        if (!cr.Exception.Message.Contains("612"))
+                            RedrawStatusText("删除失败..." + cacheName);
+                    }
+                    else
+                        Thread.Sleep(1000);
                 }
             }
 
             mChangeFileList.Clear();
+            #endregion
 
             // 拉取服务器文件列表
             bool isHasMore = true;
@@ -1093,27 +1123,21 @@ namespace QiNiuDrive
             {
                 int index = FindLocalFileIndex(mServerFileList[i].Name);
                 string curServeFileName = mServerFileList[i].Name.Replace("/", "\\");
-                string curDirPath = Path.GetDirectoryName(curServeFileName);
                 DateTime unixTime = new DateTime(1970, 1, 1).AddSeconds(mServerFileList[i].Timestamp);
 
-                // ReSharper disable AssignNullToNotNullAttribute
                 if (index == -1)
                 {
                     RedrawStatusText("正在下载..." + mServerFileList[i].Name);
-                    Directory.CreateDirectory(mSyncDir + "\\" + curDirPath);
-                    WebClient wb = new WebClient { Proxy = null };
-                    wb.DownloadFile("http://" + mBucket + ".u.qiniudn.com/" + mServerFileList[i].Name,
-                        mSyncDir + "\\" + curServeFileName);
-                    File.SetLastWriteTimeUtc(mSyncDir + "\\" + curServeFileName, unixTime);
+                    if (!DownloadFile("http://" + mBucket + ".u.qiniudn.com/" + mServerFileList[i].Name,
+                         curServeFileName, unixTime))
+                        RedrawStatusText("下载失败..." + mServerFileList[i].Name);
                 }
                 else if (mServerFileList[i].Timestamp > mLocalFileList[index].Timestamp)
                 {
                     RedrawStatusText("正在更新..." + mServerFileList[i].Name);
-                    Directory.CreateDirectory(mSyncDir + "\\" + curDirPath);
-                    WebClient wb = new WebClient { Proxy = null };
-                    wb.DownloadFile("http://" + mBucket + ".u.qiniudn.com/" + mServerFileList[i].Name,
-                        mSyncDir + "\\" + curServeFileName);
-                    File.SetLastWriteTimeUtc(mSyncDir + "\\" + curServeFileName, unixTime);
+                    if (!DownloadFile("http://" + mBucket + ".u.qiniudn.com/" + mServerFileList[i].Name,
+                         curServeFileName, unixTime))
+                        RedrawStatusText("更新失败..." + mServerFileList[i].Name);
                     mLocalFileList.RemoveAt(index);
                 }
                 else if (mServerFileList[i].Timestamp < mLocalFileList[index].Timestamp)
@@ -1137,11 +1161,10 @@ namespace QiNiuDrive
                 }
                 else if (mServerFileList[i].Timestamp == mLocalFileList[index].Timestamp)
                     mLocalFileList.RemoveAt(index);
-                // ReSharper restore AssignNullToNotNullAttribute
                 tmpCacheList.Add(curServeFileName);
             }
 
-            // 本地完全差异文件上传
+            #region 本地完全差异文件上传
             foreach (SyncFile sf in mLocalFileList)
             {
                 // 存在缓存列表中说明已经上传过，因此属删除操作
@@ -1170,6 +1193,7 @@ namespace QiNiuDrive
                 }
                 tmpCacheList.Add(sf.Name);
             }
+            #endregion
 
             // 保存本地文件缓存
             StringBuilder sb = new StringBuilder();
@@ -1300,6 +1324,60 @@ namespace QiNiuDrive
             mIsVaildBucket = !message.Contains("(631)");
         }
 
+        // 目录重命名事件
+        private void DirectoryRenameEvent(string oldPath, string newPath)
+        {
+            DirectoryInfo di = new DirectoryInfo(newPath);
+            foreach (FileInfo fi in di.GetFiles())
+                FileRenameEvent((oldPath + "\\" + fi.Name).Substring(mSyncDir.Length + 1),
+                    (newPath + "\\" + fi.Name).Substring(mSyncDir.Length + 1));
+
+            foreach (DirectoryInfo subDi in di.GetDirectories())
+                DirectoryRenameEvent(oldPath + "\\" + subDi.Name, subDi.FullName);
+        }
+
+        // 文件重命名事件
+        private void FileRenameEvent(string oldPath, string newPath)
+        {
+            int index = FindChangeFileIndex(oldPath);
+            if (index == -1)
+                mChangeFileList.Add(new ChangeFile(oldPath, newPath));
+            else
+            {
+                // 判断是否改回了原来的名字
+                if (!mChangeFileList[index].OldName.Equals(newPath))
+                    mChangeFileList.Add(new ChangeFile(mChangeFileList[index].OldName, newPath));
+                mChangeFileList.RemoveAt(index);
+            }
+            Console.WriteLine("文件重命名：{0} {1}", oldPath, newPath);
+        }
+
+        // 下载文件
+        private bool DownloadFile(string url, string key, DateTime unixTime)
+        {
+            // 判断是否为私有空间
+            if (mIsPrivateBucket)
+            {
+                string baseUrl = GetPolicy.MakeBaseUrl(mBucket + ".u.qiniudn.com", key);
+                url = GetPolicy.MakeRequest(baseUrl);
+            }
+
+            string path = mSyncDir + "\\" + key;
+            // ReSharper disable once AssignNullToNotNullAttribute
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            WebClient wb = new WebClient { Proxy = null };
+            try
+            {
+                wb.DownloadFile(url, path);
+                File.SetLastWriteTimeUtc(path, unixTime);
+            }
+            catch
+            {
+                return false;
+            }
+            return true;
+        }
+
         #region 创建面板方法
         // 创建同步设置面板
         private void CreateSyncSettingPanel()
@@ -1332,8 +1410,14 @@ namespace QiNiuDrive
             // 创建空间名称文本框
             CharmTextBox txtBucket = new CharmTextBox
             {
-                Location = new Point(355 + MENU_WIDTH, 55 + TITLE_HEIGHT),
-                Width = 120,
+                Location = new Point(290 + MENU_WIDTH, 55 + TITLE_HEIGHT),
+                Width = 95,
+            };
+            // 创建私有空间检查框
+            CharmCheckBox chkPrivateBucket = new CharmCheckBox
+            {
+                Location = new Point(400 + MENU_WIDTH, 57 + TITLE_HEIGHT),
+                Text = "私有空间"
             };
 
             // 创建 AccessKey 文本框
@@ -1381,6 +1465,7 @@ namespace QiNiuDrive
             btnViewPath.MouseClick += btnViewPath_MouseClick;
             txtSyncCycle.TextChanged += txtSyncDir_TextChanged;
             txtBucket.TextChanged += txtSyncDir_TextChanged;
+            chkPrivateBucket.MouseClick+=chkPrivateBucket_MouseClick;
             lblQiniuOpen.MouseClick += lblQiniuOpen_MouseClick;
             txtAccessKey.TextChanged += txtSyncDir_TextChanged;
             btnViewAccessKey.MouseClick += btnViewAccessKey_MouseClick;
@@ -1396,7 +1481,7 @@ namespace QiNiuDrive
 
             // 创建同步设置面板控件集合
             mSyncSettingControls = new List<Control> { txtSyncDir, txtSyncCycle, txtAccessKey, txtSecretKey, txtBucket };
-            mSyncSettingCharmControls = new List<CharmControl> { btnViewPath, lblQiniuOpen, btnViewAccessKey, btnViewSecretKey };
+            mSyncSettingCharmControls = new List<CharmControl> { btnViewPath, lblQiniuOpen, btnViewAccessKey, btnViewSecretKey, chkPrivateBucket };
         }
 
         // 创建高级设置面板
@@ -1457,10 +1542,10 @@ namespace QiNiuDrive
             g.DrawString("云盘同步目录：", this.Font, Brushes.Black, 125, 25 + TITLE_HEIGHT);
             // 同步周期
             g.DrawString("同步时间周期：", this.Font, Brushes.Black, 125, 60 + TITLE_HEIGHT);
-            g.DrawString("（单位：秒）", this.Font, Brushes.Black, 270, 60 + TITLE_HEIGHT);
+            g.DrawString("秒", this.Font, Brushes.Black, 275, 60 + TITLE_HEIGHT);
 
             // 空间名称
-            g.DrawString("空间名称：", this.Font, Brushes.Black, 370, 60 + TITLE_HEIGHT);
+            g.DrawString("空间名称：", this.Font, Brushes.Black, 310, 60 + TITLE_HEIGHT);
 
             // 密钥管理
             g.DrawString("密钥管理", this.Font, Brushes.Black, new Point(22 + MENU_WIDTH, 100 + TITLE_HEIGHT));
