@@ -108,11 +108,11 @@ namespace QiNiuDrive
     {
         #region 常量
         private const string APP_NAME = "七牛云盘";              // 软件名称
-        private const string APP_VER = "v0.1.2";                // 软件版本
+        private const string APP_VER = "v0.1.3";                // 软件版本
         private const int UPDATE_VERSION = 201310200;           // 更新版本
-        private const string APP_CFG_PATH = "Config\\app.ini";  // 软件配置路径
+        public const string APP_CFG_PATH = "Config\\app.ini";   // 软件配置路径
         private const int TITLE_HEIGHT = 30;                    // 标题栏高度
-        const int MENU_WIDTH = 90;                              // 菜单栏宽度
+        private const int MENU_WIDTH = 90;                      // 菜单栏宽度
         #endregion
 
         #region 字段
@@ -538,7 +538,7 @@ namespace QiNiuDrive
             // 创建并实例化文件浏览对话框
             FolderBrowserDialog folderBrowserFialog = new FolderBrowserDialog
             {
-                Description = "请选择下载文件保存目录",
+                Description = "请选择同步目录",
                 SelectedPath = ((CharmTextBox)mSyncSettingControls[0]).Text
             };
 
@@ -600,8 +600,15 @@ namespace QiNiuDrive
         // 重载过滤规则按钮被单击事件
         private void btnReloadFilter_MouseClick(object sender, MouseEventArgs e)
         {
-            LoadFilterList();
+            LoadFilterList(mFilterList);
             RedrawStatusText("过滤规则已重载");
+        }
+
+        // 过滤规则测试按钮被单击事件
+        private void btnTestFilter_MouseClick(object sender, MouseEventArgs e)
+        {
+            FrmFilterTester frmFilterTester = new FrmFilterTester();
+            frmFilterTester.Show();
         }
         #endregion
 
@@ -852,7 +859,7 @@ namespace QiNiuDrive
                 g.FillRectangle(sb, MENU_WIDTH + 2, TITLE_HEIGHT, this.Width - MENU_WIDTH - 4, this.Height - TITLE_HEIGHT - bottomHeight);
                 // 绘制横线
                 g.DrawLine(Pens.DarkGray, MENU_WIDTH + 2, this.Height - bottomHeight, this.Width - 2, this.Height - bottomHeight);
-                //// 绘制按钮区
+                // 绘制按钮区
                 sb.Color = Color.FromArgb(70, Color.LightGray);
                 g.FillRectangle(sb, MENU_WIDTH + 2, this.Height - bottomHeight, this.Width - 2, bottomHeight);
                 // 绘制边框
@@ -948,21 +955,20 @@ namespace QiNiuDrive
             #endregion
 
             #region 高级设置
-            LoadFilterList();
+            if (mFilterList == null)
+                mFilterList = new List<Filter>();
+            LoadFilterList(mFilterList);
             #endregion
 
             mIsLoadFinished = true;
         }
 
         // 加载过滤器列表
-        private void LoadFilterList()
+        public static void LoadFilterList(List<Filter> filterList)
         {
             if (!File.Exists("Config/filter.txt")) return;
 
-            if (mFilterList == null)
-                mFilterList = new List<Filter>();
-            else
-                mFilterList.Clear();
+            filterList.Clear();
 
             StreamReader sr = new StreamReader("Config/filter.txt");
             string[] filters = sr.ReadToEnd().Split('\n');
@@ -977,11 +983,11 @@ namespace QiNiuDrive
 
                 // 判断过滤类型
                 if (index == 0) // 后缀
-                    mFilterList.Add(new Filter(name.Substring(1), FilterType.Suffix));
+                    filterList.Add(new Filter(name.Substring(1), FilterType.Suffix));
                 else if (index == name.Length - 1)  // 前缀
-                    mFilterList.Add(new Filter(name.Substring(0, name.Length - 1), FilterType.Prefix));
+                    filterList.Add(new Filter(name.Substring(0, name.Length - 1), FilterType.Prefix));
                 else    // 全匹配
-                    mFilterList.Add(new Filter(name, FilterType.FullMatch));
+                    filterList.Add(new Filter(name, FilterType.FullMatch));
             }
         }
 
@@ -1490,21 +1496,31 @@ namespace QiNiuDrive
         // 创建高级设置面板
         private void CreateAdvancedSettingPanel()
         {
-            // 创建浏览路径按钮
+            // 创建重载过滤规则按钮
             CharmButton btnReloadFilter = new CharmButton
             {
                 ButtonType = ButtonType.Classic_Size_12425,
                 Text = "重载过滤规则",
                 ForeColor = Color.MediumPurple,
-                Location = new Point(45 + MENU_WIDTH, 50 + TITLE_HEIGHT)
+                Location = new Point(85 + MENU_WIDTH, 50 + TITLE_HEIGHT)
+
+            };
+            // 创建过滤规则测试按钮
+            CharmButton btnTestFilter = new CharmButton
+            {
+                ButtonType = ButtonType.Classic_Size_12425,
+                Text = "过滤规则测试",
+                ForeColor = Color.MediumSlateBlue,
+                Location = new Point(245 + MENU_WIDTH, 50 + TITLE_HEIGHT)
 
             };
 
             // 关联控件事件
             btnReloadFilter.MouseClick += btnReloadFilter_MouseClick;
+            btnTestFilter.MouseClick += btnTestFilter_MouseClick;
 
             // 创建同步设置面板控件集合
-            mAdvancedSettingCharmControls = new List<CharmControl> { btnReloadFilter };
+            mAdvancedSettingCharmControls = new List<CharmControl> { btnReloadFilter, btnTestFilter };
         }
 
         // 创建关于面板
