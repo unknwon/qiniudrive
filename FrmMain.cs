@@ -42,6 +42,10 @@ namespace QiNiuDrive
     public enum FilterType
     {
         /// <summary>
+        /// 过滤类型：包含
+        /// </summary>
+        Contain,
+        /// <summary>
         /// 过滤类型：前缀
         /// </summary>
         Prefix,
@@ -109,7 +113,7 @@ namespace QiNiuDrive
         #region 常量
         private const string APP_NAME = "七牛云盘";              // 软件名称
         private const string APP_VER = "v0.1.3";                // 软件版本
-        private const int UPDATE_VERSION = 201310200;           // 更新版本
+        private const int UPDATE_VERSION = 201310210;           // 更新版本
         public const string APP_CFG_PATH = "Config\\app.ini";   // 软件配置路径
         private const int TITLE_HEIGHT = 30;                    // 标题栏高度
         private const int MENU_WIDTH = 90;                      // 菜单栏宽度
@@ -637,17 +641,21 @@ namespace QiNiuDrive
             try
             {
                 WebClient wb = new WebClient { Proxy = null };
+                wb.Headers.Add("Cache-Control", "no-cache");
                 var dict =
                     JsonConvert.DeserializeObject<Dictionary<string, dynamic>>(
-                        wb.DownloadString("http://drive.u.qiniudn.com/%E4%B8%83%E7%89%9B%E4%BA%91%E7%9B%98/UPDATE.json?download"));
+                        wb.DownloadString("http://drive.u.qiniudn.com/%E4%B8%83%E7%89%9B%E4%BA%91%E7%9B%98/UPDATE.json"));
                 if (UPDATE_VERSION < (int)dict["version"])
                 {
                     CharmMessageBox msgbox = new CharmMessageBox();
-                    msgbox.Show("尊敬的用户您好：\n\n" +
-                                "感谢您使用 " + APP_NAME + "，更高版本已经发布。\n\n" +
-                                "为了获得更好的用户体验，建议您立即更新！\n\n" +
-                                "请到 github.com/Unknwon/qiniudrive 获取最新下载地址。",
-                                "版本升级");
+                    DialogResult result = msgbox.Show("尊敬的用户您好：\n\n" +
+                        "感谢您使用 " + APP_NAME + "，更高版本已经发布。\n\n" +
+                        "为了获得更好的用户体验，建议您立即更新！\n\n" +
+                        "请到 github.com/Unknwon/qiniudrive 获取最新下载地址。\n\n" +
+                        "或单击 是 自动跳转到下载页面。",
+                        "版本升级", MessageBoxButtons.YesNo);
+                    if (result == DialogResult.Yes)
+                        Process.Start(dict["download_url"]);
                 }
             }
             catch (Exception e)
@@ -980,9 +988,12 @@ namespace QiNiuDrive
                 if (name.Length <= 0) continue;
 
                 int index = name.IndexOf('*');
+                int lastIndex = name.LastIndexOf('*');
 
                 // 判断过滤类型
-                if (index == 0) // 后缀
+                if (index == 0 && lastIndex == name.Length - 1)  // 包含
+                    filterList.Add(new Filter(name.Substring(1, name.Length - 2), FilterType.Contain));
+                else if (index == 0) // 后缀
                     filterList.Add(new Filter(name.Substring(1), FilterType.Suffix));
                 else if (index == name.Length - 1)  // 前缀
                     filterList.Add(new Filter(name.Substring(0, name.Length - 1), FilterType.Prefix));
@@ -1184,6 +1195,8 @@ namespace QiNiuDrive
                     continue;
                 }
 
+                if (IsNeedFilter(sf.Name)) continue;
+
                 RedrawStatusText("正在上载..." + sf.Name);
                 mIsDonePut = false;
                 PutFile(sf.Name.Replace("\\", "/"), mSyncDir + "\\" + sf.Name);
@@ -1226,6 +1239,10 @@ namespace QiNiuDrive
             foreach (Filter f in mFilterList)
                 switch (f.Type)
                 {
+                    case FilterType.Contain:
+                        if (name.Contains(f.Name))
+                            return true;
+                        break;
                     case FilterType.Prefix:
                         if (name.StartsWith(f.Name))
                             return true;
@@ -1252,7 +1269,13 @@ namespace QiNiuDrive
             DirectoryInfo di = new DirectoryInfo(mSyncDir + dirPrefix);
             foreach (FileInfo fi in di.GetFiles())
             {
-                string fileName = (dirPrefix.TrimStart('\\') + "\\" + fi.Name).TrimStart('\\').Replace("\\", "/");
+                string fileName = (dirPrefix.TrimStart('\\') + "\\" + fi.Name).TrimStart('\\');
+
+                // 忽略隐藏文件
+                if (fi.Attributes.ToString().Contains("Hidden"))
+                    continue;
+
+                fileName = fileName.Replace("\\", "/");
                 if (!IsNeedFilter(fileName))
                     mLocalFileList.Add(
                         new SyncFile(fileName, (fi.LastWriteTimeUtc.Ticks - timeStamp.Ticks) / 10000000));
@@ -1348,6 +1371,9 @@ namespace QiNiuDrive
         // 文件重命名事件
         private void FileRenameEvent(string oldPath, string newPath)
         {
+            // 忽略 .tmp 结尾的文件
+            if (oldPath.ToLower().EndsWith(".tmp") || newPath.ToLower().EndsWith(".tmp")) return;
+
             int index = FindChangeFileIndex(oldPath);
             if (index == -1)
                 mChangeFileList.Add(new ChangeFile(oldPath, newPath));

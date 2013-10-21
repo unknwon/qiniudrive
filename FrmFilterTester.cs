@@ -271,6 +271,13 @@ namespace QiNiuDrive
                     {
                         switch (f.Type)
                         {
+                            case FilterType.Contain:
+                                if (fileName.Contains(f.Name))
+                                {
+                                    lsvFiles.Items.Add(new ListViewItem(new[] { fileName, "是", "*" + f.Name + "*" }));
+                                    isFilter = true;
+                                }
+                                break;
                             case FilterType.Prefix:
                                 if (fileName.StartsWith(f.Name))
                                 {
