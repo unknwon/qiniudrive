@@ -105,7 +105,7 @@ namespace QiNiuDrive
         // 关闭按钮被单击事件
         private void btnClose_MouseClick(object sender, MouseEventArgs e)
         {
-            this.Close();
+            this.Hide();
         }
 
         // 浏览路径按钮被单击事件

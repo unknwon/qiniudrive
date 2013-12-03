@@ -112,8 +112,8 @@ namespace QiNiuDrive
     {
         #region 常量
         private const string APP_NAME = "七牛云盘";              // 软件名称
-        private const string APP_VER = "v0.1.3";                // 软件版本
-        private const int UPDATE_VERSION = 201310210;           // 更新版本
+        private const string APP_VER = "v0.1.4";                // 软件版本
+        private const int UPDATE_VERSION = 201312030;           // 更新版本
         public const string APP_CFG_PATH = "Config\\app.ini";   // 软件配置路径
         private const int TITLE_HEIGHT = 30;                    // 标题栏高度
         private const int MENU_WIDTH = 90;                      // 菜单栏宽度
@@ -156,6 +156,8 @@ namespace QiNiuDrive
         private int mSyncCycle;                 // 同步周期
         private string mBucket = string.Empty;  // 空间名称
         private bool mIsPrivateBucket;          // 指示是否为私有空间
+        private string mPrefix = string.Empty;  // 同步前缀
+        private bool mIsCaptureChanges;         // 指示是否监控变动
         private bool mIsDonePut;                // 指示是否完成上传
         private bool mIsSyncNow;                // 指示是否立即同步
         private bool mIsSyncing;                // 指示是否正在同步
@@ -163,9 +165,9 @@ namespace QiNiuDrive
 
         // * 用户控件 *
         private List<Control> mSyncSettingControls;             // 同步设置控件集合
-        // 0-同步目录文本框；1-同步周期文本框；2-AccessKey 文本框；3-SecretKey 文本框；4-空间名称文本框
+        // 0-同步目录文本框；1-同步周期文本框；2-AccessKey 文本框；3-SecretKey 文本框；4-空间名称文本框；5-同步前缀文本框
         private List<CharmControl> mSyncSettingCharmControls;   // 同步设置面板 Charm 控件集合
-        // 4-私有空间检查框
+        // 4-私有空间检查框；5-监控变动检查框
         #endregion
 
         #region 高级设置
@@ -173,6 +175,7 @@ namespace QiNiuDrive
         private List<Filter> mFilterList; // 过滤器列表
 
         // * 用户控件 *
+        private readonly FrmFilterTester mFrmFilterTester = new FrmFilterTester();    // 过滤规则测试窗口
         private List<CharmControl> mAdvancedSettingCharmControls;   // 高级设置面板 Charm 控件集合
         #endregion
 
@@ -496,6 +499,8 @@ namespace QiNiuDrive
             IniOperation.WriteValue(APP_CFG_PATH, "setting", "sync_cycle", ((CharmTextBox)mSyncSettingControls[1]).Text);
             IniOperation.WriteValue(APP_CFG_PATH, "setting", "bucket", ((CharmTextBox)mSyncSettingControls[4]).Text);
             IniOperation.WriteValue(APP_CFG_PATH, "setting", "private_bucket", (mSyncSettingCharmControls[4]).Checked.ToString());
+            IniOperation.WriteValue(APP_CFG_PATH, "setting", "prefix", ((CharmTextBox)mSyncSettingControls[5]).Text);
+            IniOperation.WriteValue(APP_CFG_PATH, "setting", "capture_changes", (mSyncSettingCharmControls[5]).Checked.ToString());
 
             string accessKey = ((CharmTextBox)mSyncSettingControls[2]).Text;
             string secretKey = ((CharmTextBox)mSyncSettingControls[3]).Text;
@@ -508,7 +513,6 @@ namespace QiNiuDrive
                 sw.Write(keys);
                 sw.Close();
             }
-
             #endregion
 
             mIsLoadFinished = false;
@@ -551,7 +555,7 @@ namespace QiNiuDrive
                 ((CharmTextBox)mSyncSettingControls[0]).Text = folderBrowserFialog.SelectedPath;    // 用户指定新的目录
         }
 
-        // 私有空间检查框被单击事件
+        // 私有空间检查框被单击事件（监控变动检查框也关联此事件）
         private void chkPrivateBucket_MouseClick(object sender, MouseEventArgs e)
         {
             // 首次启动时程序数据加载时不作响应
@@ -561,24 +565,40 @@ namespace QiNiuDrive
             this.Invalidate(mBtnApply.ClientRectangle); // 重绘控件
         }
 
+        // 立即同步按钮被单击事件
+        private void btnSyncNow_MouseClick(object sender, MouseEventArgs e)
+        {
+            mIsSyncNow = true;
+        }
+
         // 查看 AccessKey 按钮被单击事件
         private void btnViewAccessKey_MouseClick(object sender, MouseEventArgs e)
         {
             CharmMessageBox msgbox = new CharmMessageBox();
-            msgbox.Show("尊敬的用户您好：\n" +
-                        "以下为您的 AccessKey，请妥善保管！\n\n" +
-                        ((CharmTextBox)mSyncSettingControls[2]).Text,
-                        "查看密钥");
+            string accessKey = ((CharmTextBox)mSyncSettingControls[2]).Text;
+            if (accessKey.Length == 0)
+                msgbox.Show("尊敬的用户您好：\n" +
+                        "您尚未填写任何 AccessKey，请到七牛开发者中心获取！",
+                        "查看密钥", MessageBoxButtons.OK, CharmMessageBoxIcon.Warning);
+            else
+                msgbox.Show("尊敬的用户您好：\n" +
+                            "以下为您的 AccessKey，请妥善保管！\n\n" + accessKey,
+                            "查看密钥");
         }
 
         // 查看 SecretKey 按钮被单击事件
         private void btnViewSecretKey_MouseClick(object sender, MouseEventArgs e)
         {
             CharmMessageBox msgbox = new CharmMessageBox();
-            msgbox.Show("尊敬的用户您好：\n" +
-                        "以下为您的 SecretKey，请妥善保管！\n\n" +
-                        ((CharmTextBox)mSyncSettingControls[3]).Text,
-                        "查看密钥");
+            string secretKey = ((CharmTextBox)mSyncSettingControls[3]).Text;
+            if (secretKey.Length == 0)
+                msgbox.Show("尊敬的用户您好：\n" +
+                        "您尚未填写任何 SecretKey，请到七牛开发者中心获取！",
+                        "查看密钥", MessageBoxButtons.OK, CharmMessageBoxIcon.Warning);
+            else
+                msgbox.Show("尊敬的用户您好：\n" +
+                            "以下为您的 SecretKey，请妥善保管！\n\n" + secretKey,
+                            "查看密钥");
         }
 
         // 七牛开发平台链接标签鼠标单击事件
@@ -611,8 +631,7 @@ namespace QiNiuDrive
         // 过滤规则测试按钮被单击事件
         private void btnTestFilter_MouseClick(object sender, MouseEventArgs e)
         {
-            FrmFilterTester frmFilterTester = new FrmFilterTester();
-            frmFilterTester.Show();
+            mFrmFilterTester.Show();
         }
         #endregion
 
@@ -644,7 +663,7 @@ namespace QiNiuDrive
                 wb.Headers.Add("Cache-Control", "no-cache");
                 var dict =
                     JsonConvert.DeserializeObject<Dictionary<string, dynamic>>(
-                        wb.DownloadString("http://drive.u.qiniudn.com/%E4%B8%83%E7%89%9B%E4%BA%91%E7%9B%98/UPDATE.json"));
+                        wb.DownloadString("https://github.com/Unknwon/qiniudrive/blob/master/VERSION.json"));
                 if (UPDATE_VERSION < (int)dict["version"])
                 {
                     CharmMessageBox msgbox = new CharmMessageBox();
@@ -942,6 +961,18 @@ namespace QiNiuDrive
             {
                 mIsPrivateBucket = true;
                 mSyncSettingCharmControls[4].Checked = true;
+            }
+
+            // 获取同步前缀
+            mPrefix = IniOperation.ReadValue(APP_CFG_PATH, "setting", "prefix");
+            if (mPrefix.Length > 0)
+                ((CharmTextBox)mSyncSettingControls[5]).Text = mBucket;
+
+            // 监控变动
+            if (IniOperation.ReadValue(APP_CFG_PATH, "setting", "capture_changes").Equals("True"))
+            {
+                mIsCaptureChanges = true;
+                mSyncSettingCharmControls[5].Checked = true;
             }
 
             // 获取密钥
@@ -1448,6 +1479,7 @@ namespace QiNiuDrive
                 Location = new Point(290 + MENU_WIDTH, 55 + TITLE_HEIGHT),
                 Width = 95,
             };
+
             // 创建私有空间检查框
             CharmCheckBox chkPrivateBucket = new CharmCheckBox
             {
@@ -1455,10 +1487,33 @@ namespace QiNiuDrive
                 Text = "私有空间"
             };
 
+            // 创建同步前缀文本框
+            CharmTextBox txtPrefix = new CharmTextBox
+            {
+                Location = new Point(150 + MENU_WIDTH, 90 + TITLE_HEIGHT),
+                Width = 95,
+            };
+
+            // 创建监控变动检查框
+            CharmCheckBox chkCaptureChange = new CharmCheckBox
+            {
+                Location = new Point(260 + MENU_WIDTH, 92 + TITLE_HEIGHT),
+                Text = "监控目录文件变化"
+            };
+
+            // 创建立即同步按钮
+            CharmButton btnSyncNow = new CharmButton
+            {
+                ButtonType = ButtonType.Classic_Size_08223,
+                Text = "立即同步",
+                ForeColor = Color.Purple,
+                Location = new Point(399 + MENU_WIDTH, 92 + TITLE_HEIGHT)
+            };
+
             // 创建 AccessKey 文本框
             CharmTextBox txtAccessKey = new CharmTextBox
             {
-                Location = new Point(127 + MENU_WIDTH, 125 + TITLE_HEIGHT),
+                Location = new Point(127 + MENU_WIDTH, 160 + TITLE_HEIGHT),
                 Width = 260,
                 TextInputMode = InputMode.Password
             };
@@ -1468,13 +1523,13 @@ namespace QiNiuDrive
                 ButtonType = ButtonType.Classic_Size_08223,
                 Text = "查看密钥",
                 ForeColor = Color.Red,
-                Location = new Point(399 + MENU_WIDTH, 127 + TITLE_HEIGHT)
+                Location = new Point(399 + MENU_WIDTH, 162 + TITLE_HEIGHT)
             };
 
             // 创建 SecretKey 文本框
             CharmTextBox txtSecretKey = new CharmTextBox
             {
-                Location = new Point(127 + MENU_WIDTH, 160 + TITLE_HEIGHT),
+                Location = new Point(127 + MENU_WIDTH, 195 + TITLE_HEIGHT),
                 Width = 260,
                 TextInputMode = InputMode.Password
             };
@@ -1484,13 +1539,13 @@ namespace QiNiuDrive
                 ButtonType = ButtonType.Classic_Size_08223,
                 Text = "查看密钥",
                 ForeColor = Color.Red,
-                Location = new Point(399 + MENU_WIDTH, 162 + TITLE_HEIGHT)
+                Location = new Point(399 + MENU_WIDTH, 197 + TITLE_HEIGHT)
             };
 
             // 创建七牛开发平台链接标签
             CharmLinkLabel lblQiniuOpen = new CharmLinkLabel
             {
-                Location = new Point(280, 230),
+                Location = new Point(280, 265),
                 ForeColor = Color.Blue,
                 Text = "七牛云存储开发者平台"
             };
@@ -1506,6 +1561,9 @@ namespace QiNiuDrive
             btnViewAccessKey.MouseClick += btnViewAccessKey_MouseClick;
             txtSecretKey.TextChanged += txtSyncDir_TextChanged;
             btnViewSecretKey.MouseClick += btnViewSecretKey_MouseClick;
+            txtPrefix.TextChanged += txtSyncDir_TextChanged;
+            chkCaptureChange.MouseClick += chkPrivateBucket_MouseClick;
+            btnSyncNow.MouseClick += btnSyncNow_MouseClick;
 
             // 将控件添加到集合中
             this.Controls.Add(txtSyncDir);
@@ -1513,10 +1571,11 @@ namespace QiNiuDrive
             this.Controls.Add(txtAccessKey);
             this.Controls.Add(txtSecretKey);
             this.Controls.Add(txtBucket);
+            this.Controls.Add(txtPrefix);
 
             // 创建同步设置面板控件集合
-            mSyncSettingControls = new List<Control> { txtSyncDir, txtSyncCycle, txtAccessKey, txtSecretKey, txtBucket };
-            mSyncSettingCharmControls = new List<CharmControl> { btnViewPath, lblQiniuOpen, btnViewAccessKey, btnViewSecretKey, chkPrivateBucket };
+            mSyncSettingControls = new List<Control> { txtSyncDir, txtSyncCycle, txtAccessKey, txtSecretKey, txtBucket, txtPrefix };
+            mSyncSettingCharmControls = new List<CharmControl> { btnViewPath, lblQiniuOpen, btnViewAccessKey, btnViewSecretKey, chkPrivateBucket, chkCaptureChange, btnSyncNow };
         }
 
         // 创建高级设置面板
@@ -1592,12 +1651,15 @@ namespace QiNiuDrive
             // 空间名称
             g.DrawString("空间名称：", this.Font, Brushes.Black, 310, 60 + TITLE_HEIGHT);
 
+            // 同步前缀
+            g.DrawString("当前设备同步前缀：", this.Font, Brushes.Black, 125, 95 + TITLE_HEIGHT);
+
             // 密钥管理
-            g.DrawString("密钥管理", this.Font, Brushes.Black, new Point(22 + MENU_WIDTH, 100 + TITLE_HEIGHT));
-            g.DrawLine(Pens.DarkGray, 90 + MENU_WIDTH, 110 + TITLE_HEIGHT, this.Width - 50, 110 + TITLE_HEIGHT);
-            g.DrawString("Access Key：", this.Font, Brushes.Black, 125, 130 + TITLE_HEIGHT);
-            g.DrawString("Secret Key：", this.Font, Brushes.Black, 125, 165 + TITLE_HEIGHT);
-            g.DrawString("申请注册七牛开发者帐号：", this.Font, Brushes.Black, 125, 200 + TITLE_HEIGHT);
+            g.DrawString("密钥管理", this.Font, Brushes.Black, new Point(22 + MENU_WIDTH, 135 + TITLE_HEIGHT));
+            g.DrawLine(Pens.DarkGray, 90 + MENU_WIDTH, 145 + TITLE_HEIGHT, this.Width - 50, 145 + TITLE_HEIGHT);
+            g.DrawString("Access Key：", this.Font, Brushes.Black, 125, 165 + TITLE_HEIGHT);
+            g.DrawString("Secret Key：", this.Font, Brushes.Black, 125, 200 + TITLE_HEIGHT);
+            g.DrawString("申请注册七牛开发者帐号：", this.Font, Brushes.Black, 125, 235 + TITLE_HEIGHT);
         }
 
         // 绘制高级设置面板
