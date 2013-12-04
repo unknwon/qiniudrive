@@ -112,8 +112,8 @@ namespace QiNiuDrive
     {
         #region 常量
         private const string APP_NAME = "七牛云盘";              // 软件名称
-        private const string APP_VER = "v0.1.4";                // 软件版本
-        private const int UPDATE_VERSION = 201312030;           // 更新版本
+        private const string APP_VER = "v0.1.5";                // 软件版本
+        private const int UPDATE_VERSION = 201312040;           // 更新版本
         public const string APP_CFG_PATH = "Config\\app.ini";   // 软件配置路径
         private const int TITLE_HEIGHT = 30;                    // 标题栏高度
         private const int MENU_WIDTH = 90;                      // 菜单栏宽度
@@ -610,7 +610,7 @@ namespace QiNiuDrive
         // 文件监视器捕捉到重命名事件
         private void mFileWatcher_Renamed(object source, RenamedEventArgs e)
         {
-            if (mIsSyncing) return;
+            if (mIsSyncing || !mIsCaptureChanges) return;
 
             // 判断是否为目录改名
             if (Directory.Exists(e.FullPath))
@@ -663,7 +663,7 @@ namespace QiNiuDrive
                 wb.Headers.Add("Cache-Control", "no-cache");
                 var dict =
                     JsonConvert.DeserializeObject<Dictionary<string, dynamic>>(
-                        wb.DownloadString("https://github.com/Unknwon/qiniudrive/blob/master/VERSION.json"));
+                        wb.DownloadString("https://raw.github.com/Unknwon/qiniudrive/master/VERSION.json"));
                 if (UPDATE_VERSION < (int)dict["version"])
                 {
                     CharmMessageBox msgbox = new CharmMessageBox();
@@ -962,6 +962,11 @@ namespace QiNiuDrive
                 mIsPrivateBucket = true;
                 mSyncSettingCharmControls[4].Checked = true;
             }
+            else
+            {
+                mIsPrivateBucket = false;
+                mSyncSettingCharmControls[4].Checked = false;
+            }
 
             // 获取同步前缀
             mPrefix = IniOperation.ReadValue(APP_CFG_PATH, "setting", "prefix");
@@ -974,6 +979,12 @@ namespace QiNiuDrive
                 mIsCaptureChanges = true;
                 mSyncSettingCharmControls[5].Checked = true;
             }
+            else
+            {
+                mIsCaptureChanges = false;
+                mSyncSettingCharmControls[5].Checked = false;
+            }
+
 
             // 获取密钥
             if (File.Exists("Config/KEY"))
@@ -1109,7 +1120,7 @@ namespace QiNiuDrive
             // 获取本地文件列表
             LoadLocalFiles("");
 
-            // 获取本地文件缓存
+            //// 获取本地文件缓存
             if (File.Exists("Data/file_cache_list"))
             {
                 mLocalFileCache.Clear();
@@ -1134,15 +1145,15 @@ namespace QiNiuDrive
                         continue;
                     }
 
-                    RedrawStatusText("正在删除（上行）..." + cacheName);
-                    CallRet cr = mRsClient.Delete(new EntryPath(mBucket, cacheName));
-                    if (!cr.OK)
-                    {
-                        if (!cr.Exception.Message.Contains("612"))
-                            RedrawStatusText("删除失败..." + cacheName);
-                    }
-                    else
-                        Thread.Sleep(1000);
+                    //RedrawStatusText("正在删除（上行）..." + cacheName);
+                    //CallRet cr = mRsClient.Delete(new EntryPath(mBucket, cacheName));
+                    //if (!cr.OK)
+                    //{
+                    //    if (!cr.Exception.Message.Contains("612"))
+                    //        RedrawStatusText("删除失败..." + cacheName);
+                    //}
+                    //else
+                    //    Thread.Sleep(1000);
                 }
             }
 
@@ -1155,7 +1166,7 @@ namespace QiNiuDrive
 
             while (isHasMore)
             {
-                DumpRet dr = mRsfClient.ListPrefix(mBucket, "", marker);
+                DumpRet dr = mRsfClient.ListPrefix(mBucket, mPrefix, marker);
 
                 // 存储文件到服务器文件列表
                 foreach (DumpItem item in dr.Items)
@@ -1178,24 +1189,24 @@ namespace QiNiuDrive
 
                 if (index == -1)
                 {
-                    RedrawStatusText("正在下载..." + mServerFileList[i].Name);
-                    if (!DownloadFile("http://" + mBucket + ".u.qiniudn.com/" + mServerFileList[i].Name,
-                         curServeFileName, unixTime))
-                        RedrawStatusText("下载失败..." + mServerFileList[i].Name);
+                    //RedrawStatusText("正在下载..." + mServerFileList[i].Name);
+                    //if (!DownloadFile("http://" + mBucket + ".u.qiniudn.com/" + mServerFileList[i].Name,
+                    //     curServeFileName, unixTime))
+                    //    RedrawStatusText("下载失败..." + mServerFileList[i].Name);
                 }
                 else if (mServerFileList[i].Timestamp > mLocalFileList[index].Timestamp)
                 {
-                    RedrawStatusText("正在更新..." + mServerFileList[i].Name);
-                    if (!DownloadFile("http://" + mBucket + ".u.qiniudn.com/" + mServerFileList[i].Name,
-                         curServeFileName, unixTime))
-                        RedrawStatusText("更新失败..." + mServerFileList[i].Name);
+                    //RedrawStatusText("正在更新..." + mServerFileList[i].Name);
+                    //if (!DownloadFile("http://" + mBucket + ".u.qiniudn.com/" + mServerFileList[i].Name,
+                    //     curServeFileName, unixTime))
+                    //    RedrawStatusText("更新失败..." + mServerFileList[i].Name);
                     mLocalFileList.RemoveAt(index);
                 }
                 else if (mServerFileList[i].Timestamp < mLocalFileList[index].Timestamp)
                 {
                     RedrawStatusText("正在上传..." + mServerFileList[i].Name);
                     mIsDonePut = false;
-                    PutFile(mServerFileList[i].Name, mSyncDir + "\\" + mServerFileList[i].Name, true);
+                    PutFile(mPrefix + mServerFileList[i].Name, mSyncDir + "\\" + mServerFileList[i].Name, true);
                     WaitUntilTure(mIsDonePut);
                     if (mPutRet.OK)
                         // ReSharper disable once PossibleLossOfFraction
@@ -1221,16 +1232,16 @@ namespace QiNiuDrive
                 // 存在缓存列表中说明已经上传过，因此属删除操作
                 if (FindLocalCacheIndex(sf.Name) > -1)
                 {
-                    RedrawStatusText("正在删除（下行）..." + sf.Name);
-                    File.Delete(mSyncDir + "\\" + sf.Name);
-                    continue;
+                    //RedrawStatusText("正在删除（下行）..." + sf.Name);
+                    //File.Delete(mSyncDir + "\\" + sf.Name);
+                    //continue;
                 }
 
                 if (IsNeedFilter(sf.Name)) continue;
 
                 RedrawStatusText("正在上载..." + sf.Name);
                 mIsDonePut = false;
-                PutFile(sf.Name.Replace("\\", "/"), mSyncDir + "\\" + sf.Name);
+                PutFile(mPrefix + sf.Name.Replace("\\", "/"), mSyncDir + "\\" + sf.Name);
                 WaitUntilTure(mIsDonePut);
                 if (mPutRet.OK)
                     // ReSharper disable once PossibleLossOfFraction
@@ -1333,7 +1344,7 @@ namespace QiNiuDrive
         private int FindLocalFileIndex(string name)
         {
             for (int i = 0; i < mLocalFileList.Count; i++)
-                if (mLocalFileList[i].Name.Equals(name))
+                if (mLocalFileList[i].Name.Equals(name.TrimStart(mPrefix.ToCharArray())))
                     return i;
             return -1;
         }
