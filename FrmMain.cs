@@ -693,10 +693,10 @@ namespace QiNiuDrive
             mLocalFileCache = new List<string>();
             mChangeFileList = new List<ChangeFile>();
 
-            RedrawStatusText("正在连接服务器...");
-
             // 检查授权及其它设置
             VerifyAuth();
+            RedrawStatusText("正在连接服务器...");
+
             mIsUpdateChecked = true;
 
             int count = 0;
@@ -1395,7 +1395,7 @@ namespace QiNiuDrive
         private void CheckException(string message)
         {
             mIsVaildKeys = !message.Contains("(401)");
-            mIsVaildBucket = !message.Contains("(631)");
+            mIsVaildBucket = !message.Contains("(631)") && !message.Contains("(599)");
         }
 
         // 目录重命名事件
